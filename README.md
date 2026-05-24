@@ -1,25 +1,31 @@
 # supercode
 
-Run multiple [Claude Code](https://claude.ai/code) sessions in parallel — each in its own git worktree, all in one tmux window.
+Run multiple [Claude Code](https://claude.ai/code) sessions in parallel — each in its own git worktree, all inside one tmux window.
 
 ![Bash](https://img.shields.io/badge/Bash-4.0%2B-green)
 ![License](https://img.shields.io/badge/License-MIT-blue)
 
 ![supercode in action](screenshot.png)
 
-## What it does
+## Why
 
-- Spawns N parallel Claude Code agents, each working in an isolated git worktree off your current HEAD
-- Arranges them in a single tmux window with a tiled pane layout
-- Includes a **Brain** pane — an orchestrator agent that coordinates the workers, dispatches tasks, and monitors progress
-- Provides commands to peek at agent screens, send messages, broadcast to all, save/merge work, and roll back
+A single AI coding agent is powerful. But real projects have multiple independent pieces — an API, a frontend, tests, database migrations, documentation. Doing them one at a time is slow.
 
-## Requirements
+**supercode** lets you work on all of them at once. Five Claude Code agents run in parallel, each in an isolated copy of your repo, while a sixth **Brain** agent orchestrates the whole thing. What used to take an hour of sequential back-and-forth now takes minutes.
 
-- **Bash 4.0+** (macOS ships 3.x — `brew install bash`)
-- **git**
-- **tmux** (`brew install tmux` on macOS)
-- **[Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)** (`claude` must be in your PATH)
+## The Brain
+
+The Brain is the key difference between supercode and just opening five terminals.
+
+When you launch supercode with tasks, the Brain:
+
+1. **Reads your tasks** and figures out how they relate to each other
+2. **Designs a coordination plan** — shared interfaces, naming conventions, file ownership — so agents don't step on each other
+3. **Dispatches composed instructions** to each worker, telling them not just *what* to build but *what the other agents are doing* so they stay compatible
+4. **Monitors progress** by peeking at agent screens and checking their git status
+5. **Follows up** with agents that get stuck or drift off course
+
+Without the Brain, five agents writing code in the same repo would produce five conflicting implementations. The Brain turns them into a coordinated team.
 
 ## Install
 
@@ -29,78 +35,61 @@ cd supercode
 ./install.sh
 ```
 
-Or manually copy the `supercode` script to somewhere in your `$PATH`:
+Or just copy the script:
 
 ```bash
 cp supercode ~/.local/bin/supercode
 chmod +x ~/.local/bin/supercode
 ```
 
+**Requires:** Bash 4+, git, tmux, and the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude` in your PATH). On macOS, `brew install bash tmux`.
+
 ## Usage
 
 ```bash
-# Launch 5 workers + brain, describe your project interactively
+# Just launch — the brain asks what you want to build
 supercode
 
-# Launch with tasks — brain coordinates and dispatches
+# Give it tasks — the brain coordinates and dispatches
 supercode "build the auth API" "create the React frontend" "write integration tests"
 
-# Legacy direct mode: one agent per task, no brain
+# Direct mode: one agent per task, no brain
 supercode --direct "fix login bug" "add rate limiting"
-
-# Interactive: prompts for agent count and tasks
-supercode -i
-
-# Read tasks from a file (one per line)
-supercode -f tasks.txt
 ```
 
-## Commands
+### Talking to agents
 
-| Command | Description |
-|---|---|
-| `supercode` | Launch 5 workers + brain (asks what to build) |
-| `supercode "task1" "task2" ...` | Launch and dispatch tasks via brain |
-| `supercode --direct "t1" ... "tN"` | One pane per task, no brain |
-| `supercode attach` | Reattach to the running tmux session |
-| `supercode list` | Show worktrees and session status |
-| `supercode peek <N\|all>` | View an agent's screen (or all agents) |
-| `supercode tell <N> "msg"` | Send a message to agent N |
-| `supercode broadcast "msg"` | Send a message to every agent |
-| `supercode brain` | Add a brain pane to an existing session |
-| `supercode save` | Commit + merge all agents into your branch |
-| `supercode unsave` | Undo the last save |
-| `supercode rollback` | Rewind to pre-launch state |
-| `supercode kill` | Kill the tmux session (worktrees kept) |
-| `supercode clean` | Kill session + remove worktrees |
-| `supercode label set <N> "text"` | Set a short label on agent N's border |
-| `supercode label auto` | Auto-derive labels from pane titles |
-| `supercode label list` | Show current labels and accent colors |
+```bash
+supercode peek all              # see what every agent is doing
+supercode peek 3                # check on agent 3
+supercode tell 2 "use JWT"      # send a message to agent 2
+supercode broadcast "stop"      # message all agents
+```
+
+### Saving the work
+
+```bash
+supercode save                  # commit + merge all agent work into your branch
+supercode unsave                # undo the last save
+supercode rollback              # rewind to the state before supercode launched
+```
+
+### Cleanup
+
+```bash
+supercode kill                  # kill the tmux session (worktrees stay)
+supercode clean                 # kill session + remove worktrees
+```
 
 ## How it works
 
-1. Each agent gets its own git worktree branched from your current HEAD
-2. Worktrees live in `~/.supercode/<repo>/agent-N/`
-3. Branch names follow `supercode/agent-N-<timestamp>`
-4. The brain agent coordinates work — it reads agent screens, dispatches tasks, and keeps agents from conflicting
-5. `supercode save` auto-commits pending changes in each worktree, then merges all agent branches into your current branch with `--no-ff` merge commits
+1. Snapshots your current branch so you can always roll back
+2. Creates a git worktree per agent — isolated copies of your repo that share the same `.git`
+3. Opens a tmux session with a 2x3 grid: 5 worker panes + 1 brain pane
+4. Each worker runs `claude` in its own worktree. The brain runs in the main repo
+5. When you're done, `supercode save` auto-commits each agent's changes and merges them all into your branch
 
-## tmux tips
-
-| Keys | Action |
-|---|---|
-| `Ctrl-b` + arrow | Switch pane |
-| `Ctrl-b z` | Zoom/fullscreen current pane |
-| `Ctrl-b d` | Detach (leave running) |
-| `Ctrl-b [` | Scroll mode (`q` to exit) |
-| Click a pane | Focus it (mouse mode enabled) |
-
-## Environment variables
-
-| Variable | Default | Description |
-|---|---|---|
-| `SUPERCODE_HOME` | `~/.supercode` | Where worktrees are created |
-| `SUPERCODE_BOOT_DELAY` | `3` | Seconds to wait for Claude to boot before sending tasks |
+No files conflict because each agent works in its own worktree on its own branch. The brain makes sure they don't *logically* conflict either.
 
 ## License
 
