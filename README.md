@@ -5,6 +5,8 @@ Run multiple [Claude Code](https://claude.ai/code) sessions in parallel — each
 ![Bash](https://img.shields.io/badge/Bash-4.0%2B-green)
 ![License](https://img.shields.io/badge/License-MIT-blue)
 
+![supercode in action](screenshot.png)
+
 ## What it does
 
 - Spawns N parallel Claude Code agents, each working in an isolated git worktree off your current HEAD
