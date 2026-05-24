@@ -1,0 +1,1110 @@
+#!/usr/bin/env bash
+# supercode — run multiple Claude Code sessions in parallel,
+# each in its own isolated git worktree, all in one tmux window.
+
+set -euo pipefail
+
+DEFAULT_AGENTS=5            # only used by the interactive prompt; otherwise count = number of tasks
+MIN_AGENTS=2
+MAX_AGENTS=16               # tmux can do more but panes get unreadable
+SUPERCODE_HOME="${SUPERCODE_HOME:-$HOME/.supercode}"
+BOOT_DELAY="${SUPERCODE_BOOT_DELAY:-3}"   # seconds to wait for `claude` to boot before sending the task
+
+# ── colors ────────────────────────────────────────────────────────────────
+if [[ -t 1 ]]; then
+  C_BOLD=$'\e[1m'; C_DIM=$'\e[2m'; C_GREEN=$'\e[32m'; C_YELLOW=$'\e[33m'
+  C_RED=$'\e[31m'; C_CYAN=$'\e[36m'; C_RESET=$'\e[0m'
+else
+  C_BOLD=""; C_DIM=""; C_GREEN=""; C_YELLOW=""; C_RED=""; C_CYAN=""; C_RESET=""
+fi
+
+die()  { echo "${C_RED}supercode:${C_RESET} $*" >&2; exit 1; }
+info() { echo "${C_CYAN}→${C_RESET} $*"; }
+ok()   { echo "  ${C_GREEN}✓${C_RESET} $*"; }
+warn() { echo "${C_YELLOW}!${C_RESET} $*" >&2; }
+
+usage() {
+  cat <<EOF
+${C_BOLD}supercode${C_RESET} — run multiple Claude Code sessions in parallel
+
+${C_BOLD}USAGE${C_RESET}
+  supercode                                            launch a 5-worker + 🧠 brain session (6 panes, 2×3 grid).
+                                                       Brain greets you and asks what to build.
+  supercode "task1" "task2" ...                        launch the same 6-pane session and hand the tasks to the brain,
+                                                       which composes coordinated subtasks and dispatches them.
+  supercode --direct "task1" ... "taskN"               legacy: one pane per task ($MIN_AGENTS–$MAX_AGENTS), no brain.
+  supercode -i                                         interactive: ask how many and what tasks first.
+  supercode -f <file>                                  read tasks from a file (one per line, blank/# ignored).
+  supercode attach                                     reattach to the running session
+  supercode list                                       list worktrees and session status
+  supercode save                                       commit + merge ALL agents into the current branch (asks y/n)
+  supercode unsave                                     undo the last save (asks y/n)
+  supercode rollback                                   rewind your branch back to the pre-launch snapshot (asks y/n)
+  supercode kill                                       kill the tmux session (worktrees kept)
+  supercode clean [-f|--force]                         kill session + remove worktrees (refuses if unmerged work exists)
+  supercode brain                                      add a "brain" orchestrator pane you can talk to
+  supercode peek <N|all> [--history [LINES]]           print agent N's recent screen (or all agents)
+  supercode tell <N> "message"                         deliver message to agent N's Claude prompt
+  supercode broadcast "message"                        deliver message to every agent
+  supercode label set <N> "short text"                 set the short job label shown in agent N's border
+  supercode label auto                                 derive labels from current pane titles
+  supercode label list                                 show current labels and accent colors
+  supercode label clear <N>                            remove agent N's label (fall back to dynamic title)
+  supercode -h | --help                                show this help
+
+${C_BOLD}HOW IT WORKS${C_RESET}
+  • Each agent gets its own git worktree off the current HEAD.
+  • Worktrees live in:  \$SUPERCODE_HOME/<repo>/agent-N   (default ~/.supercode)
+  • One tmux window with tiled panes, each running \`claude\` on a worktree.
+  • Branch names: supercode/agent-N-<timestamp>
+
+${C_BOLD}TMUX TIPS${C_RESET}
+  Ctrl-b →           switch pane (arrow keys)
+  Ctrl-b z           zoom current pane (fullscreen toggle)
+  Ctrl-b d           detach (leave running)
+  Ctrl-b [           scroll mode (q to exit)
+
+${C_BOLD}ENV${C_RESET}
+  SUPERCODE_HOME           where worktrees go (default ~/.supercode)
+  SUPERCODE_BOOT_DELAY     seconds before typing the task into claude (default ${BOOT_DELAY})
+EOF
+}
+
+require_repo() {
+  REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" \
+    || die "not inside a git repository"
+  REPO_NAME="$(basename "$REPO_ROOT")"
+  SESSION_NAME="supercode-$REPO_NAME"
+  WORKTREE_BASE="$SUPERCODE_HOME/$REPO_NAME"
+}
+
+# Escape a task string for safe use inside single-quoted shell text.
+# We send commands to tmux panes via send-keys; using single quotes around the
+# task argument keeps $ and backticks literal, but a literal ' must become '\''.
+sq_escape() {
+  local s=$1
+  printf "%s" "${s//\'/\'\\\'\'}"
+}
+
+# Deliver a multi-line prompt to a pane's Claude REPL. `send-keys -l` can't
+# carry newlines through Claude's input field, so we stage the text in a tmux
+# paste buffer and paste it (bracketed-paste preserves newlines), then submit
+# with Enter.
+_send_multiline_to_pane() {
+  local pane=$1
+  local text=$2
+  local buf="sc-prompt-$$-$RANDOM"
+  printf '%s' "$text" | tmux load-buffer -b "$buf" -
+  tmux paste-buffer -b "$buf" -t "$pane"
+  sleep 0.2
+  tmux send-keys -t "$pane" Enter
+  tmux delete-buffer -b "$buf" 2>/dev/null || true
+}
+
+cmd_start() {
+  require_repo
+  # Modes:
+  #   default — always 5 workers + 1 brain in a 2x3 grid. Brain receives the
+  #             task list (if any) and dispatches coordinated subtasks. With no
+  #             tasks, the brain waits for the user to describe the project.
+  #   --direct — legacy: one pane per task (no brain), task typed straight in.
+  local DIRECT_MODE=0
+  if [[ "${1:-}" == "--direct" ]]; then
+    DIRECT_MODE=1
+    shift
+  fi
+  local tasks=("$@")
+  local task_count=${#tasks[@]}
+
+  # Worker count: 5 fixed in default mode; one-per-task in direct mode.
+  local n
+  if (( DIRECT_MODE )); then
+    n=$task_count
+    [[ $n -ge $MIN_AGENTS ]] || die "--direct needs at least $MIN_AGENTS tasks (got $n)"
+    [[ $n -le $MAX_AGENTS ]] || die "max $MAX_AGENTS agents (got $n) — too many panes to be readable"
+  else
+    n=5
+  fi
+
+  if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+    die "session '$SESSION_NAME' is already running. Use 'supercode attach' or 'supercode kill'."
+  fi
+
+  local base_ref
+  base_ref="$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD)"
+  [[ "$base_ref" == "HEAD" ]] && base_ref="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+  local stamp
+  stamp="$(date +%s)"
+
+  info "Repo:        ${C_BOLD}$REPO_NAME${C_RESET}"
+  info "Base branch: ${C_BOLD}$base_ref${C_RESET}"
+
+  mkdir -p "$WORKTREE_BASE"
+
+  # ── Pre-launch snapshot ────────────────────────────────────────────────
+  # Commit any uncommitted work onto the current branch so:
+  #   (a) the worktrees we spawn next see the same state as the user, and
+  #   (b) 'supercode rollback' has a known SHA to rewind back to.
+  # Skip silently in detached HEAD (nothing sensible to commit onto).
+  local prelaunch_branch
+  prelaunch_branch="$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD)"
+  if [[ "$prelaunch_branch" != "HEAD" ]]; then
+    if ! git -C "$REPO_ROOT" diff --quiet 2>/dev/null \
+       || ! git -C "$REPO_ROOT" diff --cached --quiet 2>/dev/null \
+       || [[ -n "$(git -C "$REPO_ROOT" ls-files --others --exclude-standard 2>/dev/null)" ]]; then
+      git -C "$REPO_ROOT" add -A
+      git -C "$REPO_ROOT" -c user.name='supercode' -c user.email='supercode@local' \
+        commit -m "supercode: pre-launch snapshot ($(date '+%Y-%m-%d %H:%M:%S'))" --no-verify >/dev/null
+      ok "snapshotted uncommitted changes on $prelaunch_branch ($(git -C "$REPO_ROOT" rev-parse --short HEAD)) — 'supercode rollback' to undo"
+    else
+      ok "clean working tree — recorded $prelaunch_branch @ $(git -C "$REPO_ROOT" rev-parse --short HEAD) as rollback point"
+    fi
+    printf "%s\n%s\n" "$(git -C "$REPO_ROOT" rev-parse HEAD)" "$prelaunch_branch" \
+      > "$WORKTREE_BASE/.pre-launch"
+  else
+    warn "detached HEAD — skipping pre-launch snapshot (no rollback point recorded)"
+  fi
+
+  info "Creating ${C_BOLD}$n${C_RESET} worktrees..."
+
+  local worktrees=()
+  local branches=()
+  for i in $(seq 1 $n); do
+    local wt="$WORKTREE_BASE/agent-$i"
+    local branch="supercode/agent-$i-$stamp"
+
+    # Remove any stale worktree at the same path
+    if [[ -d "$wt" ]]; then
+      git -C "$REPO_ROOT" worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
+    fi
+
+    git -C "$REPO_ROOT" worktree add -b "$branch" "$wt" "$base_ref" >/dev/null
+    worktrees+=("$wt")
+    branches+=("$branch")
+    ok "agent-$i  →  $wt  ${C_DIM}($branch)${C_RESET}"
+  done
+
+  info "Launching tmux session ${C_BOLD}$SESSION_NAME${C_RESET} ($n panes)..."
+
+  # First pane (-d = detached, so we can shape the layout before attach)
+  tmux new-session -d -s "$SESSION_NAME" -n agents -c "${worktrees[0]}"
+
+  # Track each pane's id so labels and dispatch don't depend on volatile pane_index.
+  # In default mode the final layout is a 2x3 grid: agents 1-3 on top, agents 4-5
+  # + brain on bottom.
+  local -a worker_pids=()    # pane_ids of workers, in agent order (1..n)
+  local brain_pid=""
+
+  if (( ! DIRECT_MODE )); then
+    # ── 2x3 grid: 5 workers + brain ─────────────────────────────────────────
+    local p1 p2 p3 p4 p5 pb
+    p1=$(tmux display-message -t "$SESSION_NAME:0" -p '#{pane_id}')  # agent 1 (top-left)
+
+    # Vertical split → bottom-left (will become agent 4)
+    tmux split-window -t "$p1" -v -c "${worktrees[3]}"
+    p4=$(tmux display-message -t "$SESSION_NAME:0" -p '#{pane_id}')
+
+    # Top row: add middle (agent 2) and right (agent 3)
+    tmux split-window -t "$p1" -h -c "${worktrees[1]}"
+    p2=$(tmux display-message -t "$SESSION_NAME:0" -p '#{pane_id}')
+    tmux split-window -t "$p2" -h -c "${worktrees[2]}"
+    p3=$(tmux display-message -t "$SESSION_NAME:0" -p '#{pane_id}')
+
+    # Bottom row: add middle (agent 5) and right (brain — uses repo root)
+    tmux split-window -t "$p4" -h -c "${worktrees[4]}"
+    p5=$(tmux display-message -t "$SESSION_NAME:0" -p '#{pane_id}')
+    tmux split-window -t "$p5" -h -c "$REPO_ROOT"
+    pb=$(tmux display-message -t "$SESSION_NAME:0" -p '#{pane_id}')
+
+    worker_pids=("$p1" "$p2" "$p3" "$p4" "$p5")
+    brain_pid="$pb"
+
+    # Register brain so the border format applies the orange accent.
+    tmux set-option -wq -t "$SESSION_NAME:0" "@brain-pane" "$brain_pid"
+    tmux select-pane -t "$brain_pid" -T "🧠 brain"
+
+    # Equalize widths/heights across the 2x3 grid.
+    tmux select-layout -t "$SESSION_NAME:0" tiled >/dev/null
+  else
+    # ── Legacy direct mode: per-n layouts, no brain ─────────────────────────
+    local idx
+    if [[ $n -eq 5 ]]; then
+      tmux split-window -t "$SESSION_NAME:0" -v -c "${worktrees[3]}"
+      tmux split-window -t "$SESSION_NAME:0.0" -h -c "${worktrees[1]}"
+      tmux split-window -t "$SESSION_NAME:0.1" -h -c "${worktrees[2]}"
+      tmux split-window -t "$SESSION_NAME:0.3" -h -c "${worktrees[4]}"
+    elif [[ $n -eq 4 ]]; then
+      tmux split-window -t "$SESSION_NAME:0" -v -c "${worktrees[2]}"
+      tmux split-window -t "$SESSION_NAME:0.0" -h -c "${worktrees[1]}"
+      tmux split-window -t "$SESSION_NAME:0.2" -h -c "${worktrees[3]}"
+      tmux select-layout -t "$SESSION_NAME:0" tiled >/dev/null
+    elif [[ $n -eq 3 ]]; then
+      for ((idx=1; idx<n; idx++)); do
+        tmux split-window -t "$SESSION_NAME:0" -h -c "${worktrees[$idx]}"
+      done
+      tmux select-layout -t "$SESSION_NAME:0" even-horizontal >/dev/null
+    elif [[ $n -eq 2 ]]; then
+      tmux split-window -t "$SESSION_NAME:0" -h -c "${worktrees[1]}"
+    else
+      for ((idx=1; idx<n; idx++)); do
+        tmux split-window -t "$SESSION_NAME:0" -c "${worktrees[$idx]}"
+        tmux select-layout -t "$SESSION_NAME:0" tiled >/dev/null
+      done
+      tmux select-layout -t "$SESSION_NAME:0" tiled >/dev/null
+    fi
+    # In direct mode worker_pids stay empty; we iterate by pane_index below.
+  fi
+
+  # --- Cohesive visual theme ---
+  # Pane borders (window-scoped options)
+  tmux set-option -w -t "$SESSION_NAME:0" pane-border-status top >/dev/null 2>&1 || true
+  tmux set-option -w -t "$SESSION_NAME:0" pane-border-lines heavy >/dev/null 2>&1 || true
+  tmux set-option -w -t "$SESSION_NAME:0" pane-border-indicators both >/dev/null 2>&1 || true
+  tmux set-option -w -t "$SESSION_NAME:0" pane-border-style 'fg=colour240' >/dev/null 2>&1 || true
+  tmux set-option -w -t "$SESSION_NAME:0" pane-active-border-style 'fg=colour39,bold' >/dev/null 2>&1 || true
+  tmux set-option -w -t "$SESSION_NAME:0" window-style 'bg=colour234,fg=colour252' >/dev/null 2>&1 || true
+  tmux set-option -w -t "$SESSION_NAME:0" window-active-style 'bg=colour234,fg=colour252' >/dev/null 2>&1 || true
+
+  # Pane border title:
+  #   brain pane  →  [orange-banner] 🧠 SUPERBRAIN 🧠 [/banner], approximately
+  #                  centered in the top border via leading ━ chars (matched to
+  #                  the heavy border line so the padding blends in).
+  #   worker pane →  ●/○  [accent][N]  ·  label  (or truncated pane_title if no label)
+  # Each worker pane stores @accent and @label as pane-level options. The brain
+  # pane is identified by pane_id matching the window option @brain-pane.
+  tmux set-option -w -t "$SESSION_NAME:0" pane-border-format \
+    '#{?#{&&:#{!=:#{@brain-pane},},#{==:#{pane_id},#{@brain-pane}}},#{?#{<:#{pane_width},35},━ #[bg=colour214\,fg=colour234\,bold] 🧠 SUPERBRAIN #[default] ,#{?#{<:#{pane_width},55},━━━━━━ #[bg=colour214\,fg=colour234\,bold] 🧠 SUPERBRAIN 🧠 #[default] ,#{?#{<:#{pane_width},85},━━━━━━━━━━━━━━━ #[bg=colour214\,fg=colour234\,bold] 🧠 SUPERBRAIN 🧠 #[default] ,#{?#{<:#{pane_width},120},━━━━━━━━━━━━━━━━━━━━━━━━━ #[bg=colour214\,fg=colour234\,bold] 🧠 SUPERBRAIN 🧠 #[default] ,━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ #[bg=colour214\,fg=colour234\,bold] 🧠 SUPERBRAIN 🧠 #[default] }}}}, #{?pane_active,#[fg=colour120]●,#[fg=colour240]○} #[fg=colour#{?#{!=:#{@accent},},#{@accent},39}#{?pane_active,\,bold,}]#{e|+:#{pane_index},1}#[nobold] #[fg=colour244]·#[fg=#{?pane_active,colour252,colour244}#{?pane_active,\,bold,}] #{?#{!=:#{@label},},#{=27:#{@label}},#{?#{<:#{pane_width},35},#{=23:#{pane_title}},#{?#{<:#{pane_width},55},#{=43:#{pane_title}},#{?#{<:#{pane_width},85},#{=73:#{pane_title}},#{?#{<:#{pane_width},120},#{=105:#{pane_title}},#{pane_title}}}}}}#[default] }' \
+    >/dev/null 2>&1 || true
+
+  # Mouse on: click panes to focus, drag borders to resize, scroll history.
+  tmux set-option -t "$SESSION_NAME" mouse on >/dev/null 2>&1 || true
+
+  # Status bar (powerline-style segments using standard Unicode chevrons)
+  tmux set-option -t "$SESSION_NAME" status on >/dev/null 2>&1 || true
+  tmux set-option -t "$SESSION_NAME" status-position bottom >/dev/null 2>&1 || true
+  tmux set-option -t "$SESSION_NAME" status-interval 2 >/dev/null 2>&1 || true
+  tmux set-option -t "$SESSION_NAME" status-justify centre >/dev/null 2>&1 || true
+  tmux set-option -t "$SESSION_NAME" status-style 'bg=colour234,fg=colour252' >/dev/null 2>&1 || true
+  tmux set-option -t "$SESSION_NAME" status-left-length 60 >/dev/null 2>&1 || true
+  tmux set-option -t "$SESSION_NAME" status-right-length 60 >/dev/null 2>&1 || true
+  tmux set-option -t "$SESSION_NAME" status-left \
+    '#[bg=colour99,fg=colour234,bold] ⚡ supercode #[bg=colour238,fg=colour99]▶#[bg=colour238,fg=colour252] #{session_name} #[bg=colour234,fg=colour238]▶ ' >/dev/null 2>&1 || true
+  tmux set-option -t "$SESSION_NAME" status-right \
+    '#[fg=colour238]◀#[bg=colour238,fg=colour252] #(whoami)@#h #[fg=colour120]◀#[bg=colour120,fg=colour234,bold] ⏵ %H:%M ' >/dev/null 2>&1 || true
+  tmux set-option -t "$SESSION_NAME" window-status-separator '' >/dev/null 2>&1 || true
+  tmux set-option -t "$SESSION_NAME" window-status-format '#[bg=colour234,fg=colour244]  #I·#W  ' >/dev/null 2>&1 || true
+  tmux set-option -t "$SESSION_NAME" window-status-current-format \
+    '#[bg=colour234,fg=colour39]▶#[bg=colour39,fg=colour234,bold] #I·#W #[bg=colour234,fg=colour39]◀' >/dev/null 2>&1 || true
+
+  # Message popups (command-line prompts and notifications)
+  tmux set-option -t "$SESSION_NAME" message-style 'bg=colour39,fg=colour234,bold' >/dev/null 2>&1 || true
+  tmux set-option -t "$SESSION_NAME" message-command-style 'bg=colour99,fg=colour234,bold' >/dev/null 2>&1 || true
+
+  # Responsive layout: re-balance whenever the client is resized.
+  tmux set-hook -t "$SESSION_NAME" client-resized "run-shell '$0 __rebalance $SESSION_NAME'" >/dev/null 2>&1 || true
+
+  # Boot claude in every worker pane and pre-set per-pane accent + label.
+  if (( DIRECT_MODE )); then
+    # Direct mode: target panes by pane_index (no brain present).
+    for ((idx=0; idx<n; idx++)); do
+      local pane="$SESSION_NAME:0.$idx"
+      local agent_n=$((idx+1))
+      tmux select-pane -t "$pane" -T "agent-$agent_n"
+      local lbl; lbl=$(_short_label "${tasks[$idx]}")
+      _set_pane_label "$pane" "$lbl" "$agent_n"
+      tmux send-keys -t "$pane" "clear && claude" Enter
+    done
+    # Dispatch tasks directly to each pane.
+    (
+      sleep "$BOOT_DELAY"
+      for ((idx=0; idx<n; idx++)); do
+        local pane="$SESSION_NAME:0.$idx"
+        tmux send-keys -t "$pane" -l -- "${tasks[$idx]}"
+        sleep 0.2
+        tmux send-keys -t "$pane" Enter
+      done
+    ) >/dev/null 2>&1 &
+    disown || true
+    ok "Direct mode: $n agents launched, tasks dispatched in ${BOOT_DELAY}s."
+  else
+    # Default mode: target panes by stable pane_id. Workers are silent — the
+    # brain will dispatch composed tasks to them shortly.
+    for ((idx=0; idx<n; idx++)); do
+      local agent_n=$((idx+1))
+      local pid="${worker_pids[$idx]}"
+      tmux select-pane -t "$pid" -T "agent-$agent_n"
+      if (( idx < task_count )); then
+        local lbl; lbl=$(_short_label "${tasks[$idx]}")
+        _set_pane_label "$pid" "$lbl" "$agent_n"
+      else
+        _set_pane_label "$pid" "" "$agent_n"
+      fi
+      tmux send-keys -t "$pid" "clear && claude" Enter
+    done
+    # Boot claude in the brain pane and send the appropriate orientation.
+    tmux send-keys -t "$brain_pid" "clear && claude" Enter
+    local prompt
+    if (( task_count > 0 )); then
+      prompt="You are the Brain — orchestrator of this supercode session. The user wants $n parallel Claude agents to work together on a shared project. Your job RIGHT NOW is to dispatch a coordinated task to each agent so they understand each other and don't conflict."$'\n\n'
+      prompt+="STEPS:"$'\n'
+      prompt+="1. Read the tasks below carefully. Identify the shared project (these are almost certainly parts of one system — figure out which one)."$'\n'
+      prompt+="2. In 1–2 sentences, summarize the overall project and the shared elements: module structure, file paths, naming conventions, data types/interfaces that more than one agent will touch."$'\n'
+      prompt+="3. For each agent K (1..$n), compose a coordinated task message and dispatch it with:"$'\n'
+      prompt+="     supercode tell K \"composed message\""$'\n'
+      prompt+="   Each composed message should include: (a) the agent's specific work, (b) one sentence of project context, (c) brief note on what OTHER agents are building (so this agent doesn't duplicate or conflict), (d) any shared conventions/interfaces to follow."$'\n'
+      if (( task_count < n )); then
+        prompt+="   The user gave only $task_count tasks but you have $n agents — assign useful complementary work (tests, docs, code review, etc.) to the spare agents."$'\n'
+      elif (( task_count > n )); then
+        prompt+="   The user gave $task_count tasks but you have only $n agents — combine related tasks where it makes sense."$'\n'
+      fi
+      prompt+="4. After all $n agents are dispatched, say \"all $n agents launched\" and wait for the user's next message. From then on you coordinate — use 'supercode peek all' to check progress, 'supercode tell K ...' to follow up, 'supercode broadcast ...' to notify everyone."$'\n\n'
+      prompt+="AGENTS: 1..$n  (worktrees at $WORKTREE_BASE/agent-K)"$'\n\n'
+      prompt+="TASKS THE USER GAVE:"$'\n'
+      local k=1
+      for t in "${tasks[@]}"; do
+        prompt+="  $k. $t"$'\n'
+        ((k++))
+      done
+      prompt+=$'\n'
+      prompt+="Begin."
+    else
+      prompt="You are the Brain — orchestrator of this supercode session. There are $n parallel Claude agents (agent-1 .. agent-$n) booted in worktrees at $WORKTREE_BASE/agent-K, sitting idle and waiting for instructions."$'\n\n'
+      prompt+="The user hasn't told you what to build yet. Your job:"$'\n'
+      prompt+="1. Greet them in one short sentence and ask what they want to build (a project, a feature, a change to an existing codebase, etc.). Stay concise — one or two questions."$'\n'
+      prompt+="2. Once you understand the goal, design how to split the work across up to $n agents. Identify shared elements (modules, file paths, conventions, data types) that more than one agent will touch."$'\n'
+      prompt+="3. Dispatch a coordinated task to each agent with:"$'\n'
+      prompt+="     supercode tell K \"composed message\""$'\n'
+      prompt+="   Each message should include: (a) the agent's specific work, (b) one sentence of project context, (c) brief note on what OTHER agents are doing, (d) shared conventions/interfaces to follow."$'\n'
+      prompt+="4. After dispatching, stay interactive. Use 'supercode peek all' to check progress, 'supercode tell K ...' for follow-ups, 'supercode broadcast ...' for everyone."$'\n\n'
+      prompt+="You coordinate; you do not write code yourself. Begin by greeting the user and asking what they want to build."
+    fi
+    (
+      sleep "$BOOT_DELAY"
+      _send_multiline_to_pane "$brain_pid" "$prompt"
+    ) >/dev/null 2>&1 &
+    disown || true
+    # Rebalance once to even up the 2x3 grid.
+    "$0" __rebalance "$SESSION_NAME" >/dev/null 2>&1 || true
+    if (( task_count > 0 )); then
+      ok "Brain-mediated launch: 5 workers + 🧠 brain. $task_count task(s) sent to brain. Dispatch in ${BOOT_DELAY}s."
+    else
+      ok "Brain-mediated launch: 5 workers + 🧠 brain ready. Talk to the brain to describe what you want to build."
+    fi
+  fi
+
+  if [[ -t 0 && -t 1 ]]; then
+    info "Attaching... (detach with ${C_BOLD}Ctrl-b d${C_RESET})"
+    exec tmux attach -t "$SESSION_NAME"
+  else
+    info "Attach from a terminal with: ${C_BOLD}supercode attach${C_RESET}"
+  fi
+}
+
+cmd_attach() {
+  require_repo
+  tmux has-session -t "$SESSION_NAME" 2>/dev/null \
+    || die "no session '$SESSION_NAME' running. Start one with 'supercode \"task1\" ... \"taskN\"'."
+  if [[ -t 0 && -t 1 ]]; then
+    exec tmux attach -t "$SESSION_NAME"
+  else
+    die "no TTY — run 'supercode attach' from a real terminal"
+  fi
+}
+
+cmd_list() {
+  require_repo
+  echo "${C_BOLD}Repo:${C_RESET} $REPO_NAME"
+  echo "${C_BOLD}Worktrees:${C_RESET}"
+  if [[ -d "$WORKTREE_BASE" ]] && compgen -G "$WORKTREE_BASE/agent-*" >/dev/null; then
+    while IFS= read -r wt; do
+      local branch
+      branch="$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
+      echo "  $(basename "$wt")  →  $wt  ${C_DIM}($branch)${C_RESET}"
+    done < <(_sorted_worktrees)
+  else
+    echo "  ${C_DIM}(none)${C_RESET}"
+  fi
+  echo ""
+  if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+    echo "${C_BOLD}tmux:${C_RESET} ${C_GREEN}running${C_RESET}  (attach with: ${C_BOLD}supercode attach${C_RESET})"
+  else
+    echo "${C_BOLD}tmux:${C_RESET} ${C_DIM}not running${C_RESET}"
+  fi
+}
+
+cmd_kill() {
+  require_repo
+  if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+    tmux kill-session -t "$SESSION_NAME"
+    ok "killed session '$SESSION_NAME' (worktrees still on disk — run 'supercode clean' to remove)"
+  else
+    warn "no session '$SESSION_NAME' running"
+  fi
+}
+
+# Yield agent-N worktree paths in numeric order (agent-1, agent-2, ..., agent-10),
+# not the alphabetical order a bare glob gives you.
+_sorted_worktrees() {
+  [[ -d "$WORKTREE_BASE" ]] || return 0
+  find "$WORKTREE_BASE" -maxdepth 1 -mindepth 1 -name 'agent-*' -type d 2>/dev/null | sort -V
+}
+
+# Return the list of refs that "safely contain" work (everything except supercode/* branches).
+# Used to detect unmerged commits on agent branches.
+_safe_refs() {
+  git -C "$REPO_ROOT" for-each-ref --format='%(refname)' refs/heads/ refs/remotes/ \
+    | grep -v '^refs/heads/supercode/' || true
+}
+
+# Count commits on $1 that exist on no other branch (local non-supercode + all remotes).
+_unmerged_count() {
+  local branch=$1
+  local refs
+  refs=$(_safe_refs | tr '\n' ' ')
+  if [[ -z "$refs" ]]; then
+    # No "safe" refs at all — every commit on this branch is unmerged
+    git -C "$REPO_ROOT" rev-list --count "$branch" 2>/dev/null || echo 0
+  else
+    git -C "$REPO_ROOT" rev-list --count "$branch" --not $refs 2>/dev/null || echo 0
+  fi
+}
+
+cmd_save() {
+  require_repo
+
+  [[ -d "$WORKTREE_BASE" ]] && compgen -G "$WORKTREE_BASE/agent-*" >/dev/null \
+    || die "no supercode worktrees found in this repo"
+
+  local current cur_sha
+  current="$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD)"
+  [[ "$current" == "HEAD" ]] && die "main repo is in detached HEAD — check out a branch first"
+
+  if ! git -C "$REPO_ROOT" diff --quiet 2>/dev/null \
+     || ! git -C "$REPO_ROOT" diff --cached --quiet 2>/dev/null; then
+    die "main repo ($current) has uncommitted changes — commit or stash them first"
+  fi
+
+  # Step 1 — auto-commit any pending changes inside each worktree.
+  while IFS= read -r wt; do
+    local agent=$(basename "$wt")
+    if ! git -C "$wt" diff --quiet 2>/dev/null \
+       || ! git -C "$wt" diff --cached --quiet 2>/dev/null \
+       || [[ -n "$(git -C "$wt" ls-files --others --exclude-standard 2>/dev/null)" ]]; then
+      git -C "$wt" add -A
+      git -C "$wt" -c user.name='supercode' -c user.email='supercode@local' \
+        commit -m "supercode: auto-save $agent" --no-verify >/dev/null
+      ok "$agent: committed pending changes"
+    fi
+  done < <(_sorted_worktrees)
+
+  # Step 2 — build merge list (only branches with new commits not on any other ref).
+  echo ""
+  echo "${C_BOLD}Ready to save into ${C_GREEN}$current${C_RESET}${C_BOLD}:${C_RESET}"
+  local to_merge=()
+  while IFS= read -r wt; do
+    local agent branch ahead stat
+    agent=$(basename "$wt")
+    branch=$(git -C "$wt" rev-parse --abbrev-ref HEAD)
+    ahead=$(_unmerged_count "$branch")
+    if [[ "$ahead" == "0" ]]; then
+      echo "  ${C_DIM}$agent — nothing new${C_RESET}"
+    else
+      stat=$(git -C "$REPO_ROOT" diff --shortstat "$current...$branch" 2>/dev/null | sed 's/^ *//')
+      echo "  ${C_BOLD}$agent${C_RESET} — $ahead commit(s), $stat"
+      to_merge+=("$branch")
+    fi
+  done < <(_sorted_worktrees)
+  echo ""
+
+  if [[ ${#to_merge[@]} -eq 0 ]]; then
+    warn "nothing to save"
+    return 0
+  fi
+
+  local ans=""
+  read -r -p "Save all of this into ${C_BOLD}$current${C_RESET}? [y/N] " ans
+  [[ "$ans" =~ ^[yY]$ ]] || die "aborted"
+
+  # Step 3 — record pre-save HEAD so 'unsave' can rewind.
+  cur_sha=$(git -C "$REPO_ROOT" rev-parse HEAD)
+  local savefile="$WORKTREE_BASE/.last-save"
+  mkdir -p "$WORKTREE_BASE"
+
+  # Step 4 — merge each agent branch. Roll everything back on conflict.
+  for branch in "${to_merge[@]}"; do
+    if ! git -C "$REPO_ROOT" merge --no-ff "$branch" -m "supercode: merge $branch" >/dev/null 2>&1; then
+      warn "merge conflict on $branch — rolling back to pre-save state"
+      git -C "$REPO_ROOT" merge --abort 2>/dev/null || true
+      git -C "$REPO_ROOT" reset --hard "$cur_sha" >/dev/null
+      die "save aborted. Resolve conflicts inside the worktree and try again."
+    fi
+    ok "merged $branch"
+  done
+
+  printf "%s\n%s\n" "$cur_sha" "$current" > "$savefile"
+  echo ""
+  ok "Saved into $current. Run ${C_BOLD}supercode unsave${C_RESET} to undo."
+}
+
+cmd_unsave() {
+  require_repo
+  local savefile="$WORKTREE_BASE/.last-save"
+  [[ -f "$savefile" ]] || die "nothing to unsave (no save point recorded)"
+
+  local pre_sha saved_branch current cur_sha
+  pre_sha=$(sed -n 1p "$savefile")
+  saved_branch=$(sed -n 2p "$savefile")
+  current=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD)
+  cur_sha=$(git -C "$REPO_ROOT" rev-parse HEAD)
+
+  if [[ "$current" != "$saved_branch" ]]; then
+    warn "save was made on '$saved_branch' but you're currently on '$current'"
+    local ans=""
+    read -r -p "Switch to '$saved_branch' and rewind it? [y/N] " ans
+    [[ "$ans" =~ ^[yY]$ ]] || die "aborted"
+    if ! git -C "$REPO_ROOT" diff --quiet || ! git -C "$REPO_ROOT" diff --cached --quiet; then
+      die "current branch has uncommitted changes — commit or stash before switching"
+    fi
+    git -C "$REPO_ROOT" checkout "$saved_branch" >/dev/null
+    current=$saved_branch
+    cur_sha=$(git -C "$REPO_ROOT" rev-parse HEAD)
+  fi
+
+  if [[ "$cur_sha" == "$pre_sha" ]]; then
+    warn "$current is already at the pre-save state — nothing to undo"
+    rm -f "$savefile"
+    return 0
+  fi
+
+  echo "${C_BOLD}This will rewind${C_RESET} ${C_GREEN}$current${C_RESET}"
+  echo "  from: ${C_DIM}$cur_sha${C_RESET}"
+  echo "  to:   ${C_DIM}$pre_sha${C_RESET}"
+  echo ""
+  echo "${C_BOLD}Commits being removed:${C_RESET}"
+  git -C "$REPO_ROOT" log "$pre_sha..$cur_sha" --oneline 2>/dev/null | sed 's/^/  /'
+  echo ""
+  warn "this is a hard reset — uncommitted changes in $current will be lost too"
+
+  # Heads-up if anything has been pushed.
+  local pushed_one
+  pushed_one=$(git -C "$REPO_ROOT" rev-list "$pre_sha..$cur_sha" 2>/dev/null \
+    | while read -r sha; do
+        if [[ -n "$(git -C "$REPO_ROOT" branch -r --contains "$sha" 2>/dev/null)" ]]; then
+          echo "$sha"; break
+        fi
+      done)
+  [[ -n "$pushed_one" ]] && warn "some commits have already been pushed to a remote — unsave is local only"
+
+  local ans=""
+  read -r -p "Confirm unsave? [y/N] " ans
+  [[ "$ans" =~ ^[yY]$ ]] || die "aborted"
+
+  git -C "$REPO_ROOT" reset --hard "$pre_sha" >/dev/null
+  rm -f "$savefile"
+  ok "$current rewound. Agent worktrees and branches are untouched."
+}
+
+cmd_rollback() {
+  require_repo
+  local prefile="$WORKTREE_BASE/.pre-launch"
+  [[ -f "$prefile" ]] || die "no rollback point recorded — either supercode hasn't been run here, or it was cleaned"
+
+  local pre_sha pre_branch current cur_sha
+  pre_sha=$(sed -n 1p "$prefile")
+  pre_branch=$(sed -n 2p "$prefile")
+  current=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD)
+  cur_sha=$(git -C "$REPO_ROOT" rev-parse HEAD)
+
+  if [[ "$current" != "$pre_branch" ]]; then
+    warn "supercode was launched on '$pre_branch' but you're currently on '$current'"
+    local ans=""
+    read -r -p "Switch to '$pre_branch' and rewind it? [y/N] " ans
+    [[ "$ans" =~ ^[yY]$ ]] || die "aborted"
+    if ! git -C "$REPO_ROOT" diff --quiet || ! git -C "$REPO_ROOT" diff --cached --quiet; then
+      die "current branch has uncommitted changes — commit or stash before switching"
+    fi
+    git -C "$REPO_ROOT" checkout "$pre_branch" >/dev/null
+    current=$pre_branch
+    cur_sha=$(git -C "$REPO_ROOT" rev-parse HEAD)
+  fi
+
+  if [[ "$cur_sha" == "$pre_sha" ]]; then
+    warn "$current is already at the pre-launch state — nothing to roll back"
+    rm -f "$prefile"
+    return 0
+  fi
+
+  echo "${C_BOLD}This will rewind${C_RESET} ${C_GREEN}$current${C_RESET}"
+  echo "  from: ${C_DIM}$cur_sha${C_RESET}"
+  echo "  to:   ${C_DIM}$pre_sha${C_RESET} ${C_DIM}(pre-supercode state)${C_RESET}"
+  echo ""
+  echo "${C_BOLD}Commits being removed:${C_RESET}"
+  git -C "$REPO_ROOT" log "$pre_sha..$cur_sha" --oneline 2>/dev/null | sed 's/^/  /'
+  echo ""
+  warn "this is a hard reset — uncommitted changes in $current will be lost too"
+
+  local pushed_one
+  pushed_one=$(git -C "$REPO_ROOT" rev-list "$pre_sha..$cur_sha" 2>/dev/null \
+    | while read -r sha; do
+        if [[ -n "$(git -C "$REPO_ROOT" branch -r --contains "$sha" 2>/dev/null)" ]]; then
+          echo "$sha"; break
+        fi
+      done)
+  [[ -n "$pushed_one" ]] && warn "some commits have already been pushed to a remote — rollback is local only"
+
+  local ans=""
+  read -r -p "Confirm rollback? [y/N] " ans
+  [[ "$ans" =~ ^[yY]$ ]] || die "aborted"
+
+  git -C "$REPO_ROOT" reset --hard "$pre_sha" >/dev/null
+  rm -f "$prefile"
+  # An old .last-save would now reference SHAs that no longer exist on the branch.
+  rm -f "$WORKTREE_BASE/.last-save"
+  ok "$current rewound to pre-supercode state. Agent worktrees and branches are untouched — 'supercode clean --force' to drop them."
+}
+
+cmd_clean() {
+  require_repo
+  local force=0
+  if [[ "${1:-}" == "-f" || "${1:-}" == "--force" ]]; then
+    force=1
+  fi
+
+  # Pre-flight: scan for unmerged work or uncommitted changes
+  if [[ $force -eq 0 && -d "$WORKTREE_BASE" ]]; then
+    local blockers=""
+    while IFS= read -r wt; do
+      local branch unmerged dirty
+      branch=$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')
+      dirty=""
+      if ! git -C "$wt" diff --quiet 2>/dev/null \
+         || ! git -C "$wt" diff --cached --quiet 2>/dev/null \
+         || [[ -n "$(git -C "$wt" ls-files --others --exclude-standard 2>/dev/null)" ]]; then
+        dirty="uncommitted"
+      fi
+      unmerged=0
+      [[ -n "$branch" ]] && unmerged=$(_unmerged_count "$branch")
+      if [[ -n "$dirty" || "$unmerged" != "0" ]]; then
+        blockers+="  $(basename "$wt") ($branch): ${unmerged} unmerged commit(s)${dirty:+, $dirty changes}\n"
+      fi
+    done < <(_sorted_worktrees)
+    if [[ -n "$blockers" ]]; then
+      echo "${C_YELLOW}Refusing to clean — these agents still have work that isn't saved anywhere else:${C_RESET}"
+      printf "$blockers"
+      echo ""
+      echo "Run ${C_BOLD}supercode save${C_RESET} to see merge commands, or re-run with ${C_BOLD}--force${C_RESET} to drop everything anyway."
+      exit 1
+    fi
+  fi
+
+  if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+    tmux kill-session -t "$SESSION_NAME"
+    ok "killed session '$SESSION_NAME'"
+  fi
+  if [[ -d "$WORKTREE_BASE" ]]; then
+    while IFS= read -r wt; do
+      local branch
+      branch="$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
+      git -C "$REPO_ROOT" worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
+      if [[ "$branch" == supercode/* ]]; then
+        git -C "$REPO_ROOT" branch -D "$branch" 2>/dev/null || true
+      fi
+      ok "removed $(basename "$wt") ${C_DIM}($branch)${C_RESET}"
+    done < <(_sorted_worktrees)
+    rmdir "$WORKTREE_BASE" 2>/dev/null || true
+  else
+    warn "no worktrees to clean"
+  fi
+}
+
+prompt_tasks_interactive() {
+  local n=""
+  read -r -p "How many agents? [$MIN_AGENTS–$MAX_AGENTS, default $DEFAULT_AGENTS] " n
+  [[ -z "$n" ]] && n=$DEFAULT_AGENTS
+  [[ "$n" =~ ^[0-9]+$ ]] || die "not a number: $n"
+  [[ "$n" -ge $MIN_AGENTS && "$n" -le $MAX_AGENTS ]] \
+    || die "agent count must be between $MIN_AGENTS and $MAX_AGENTS (got $n)"
+
+  echo "${C_BOLD}Enter $n tasks${C_RESET} (one per line, blank to abort):"
+  local tasks=()
+  for i in $(seq 1 $n); do
+    local line=""
+    read -r -p "  ${C_CYAN}task $i:${C_RESET} " line
+    [[ -z "$line" ]] && die "task $i is empty — aborted"
+    tasks+=("$line")
+  done
+  cmd_start "${tasks[@]}"
+}
+
+read_tasks_from_file() {
+  local f=$1
+  [[ -f "$f" ]] || die "file not found: $f"
+  local tasks=()
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -z "$line" || "$line" == "#"* ]] && continue
+    tasks+=("$line")
+  done < "$f"
+  local n=${#tasks[@]}
+  [[ $n -ge $MIN_AGENTS && $n -le $MAX_AGENTS ]] \
+    || die "$f must contain $MIN_AGENTS–$MAX_AGENTS non-empty, non-comment lines (got $n)"
+  cmd_start "${tasks[@]}"
+}
+
+# ── label + accent helpers ────────────────────────────────────────────────
+
+# Per-agent accent color palette (xterm 256 colors). Indexed by agent number-1.
+_agent_accent_color() {
+  local n=$1
+  local -a palette=(87 120 222 213 141 81 215 207)
+  echo "${palette[$(( (n - 1) % ${#palette[@]} ))]}"
+}
+
+# Derive a short ~3-word label from a task string. Strips common starter verbs
+# then trims to 3 words and 24 characters.
+_short_label() {
+  local s=$1
+  s="${s##[[:space:]]}"
+  # Strip common imperative starters (case-insensitive via parameter expansion fallbacks)
+  for verb in 'Build a ' 'Build an ' 'Build ' \
+              'Set up the ' 'Set up a ' 'Set up ' 'Setup ' \
+              'Write the ' 'Write a ' 'Write ' \
+              'Add a ' 'Add an ' 'Add ' \
+              'Create a ' 'Create an ' 'Create ' 'Make ' \
+              'Test and ' 'Test ' 'Implement ' 'Refactor '; do
+    if [[ "${s:0:${#verb}}" == "$verb" ]]; then s="${s:${#verb}}"; break; fi
+  done
+  # Take first 3 words
+  local words; read -r w1 w2 w3 _ <<<"$s"
+  words="${w1:-}"
+  [[ -n "${w2:-}" ]] && words="$words $w2"
+  [[ -n "${w3:-}" ]] && words="$words $w3"
+  # Cap at 24 chars
+  printf '%.24s' "$words"
+}
+
+# Set per-pane label (and ensure an accent is assigned).
+_set_pane_label() {
+  local pane=$1 label=$2 accent_n=$3
+  tmux set-option -pqt "$pane" "@label" "$label"
+  if [[ -n "$accent_n" ]]; then
+    tmux set-option -pqt "$pane" "@accent" "$(_agent_accent_color "$accent_n")"
+  fi
+}
+
+cmd_label() {
+  require_repo
+  tmux has-session -t "$SESSION_NAME" 2>/dev/null \
+    || die "no session — run 'supercode' first"
+  local sub=${1:-list}; shift || true
+  case "$sub" in
+    set)
+      local n=${1:-}; shift || true
+      local text="${*:-}"
+      [[ -n "$n" && -n "$text" ]] || die 'usage: supercode label set <N> "short text"'
+      local pidx; pidx=$(_agent_pane_index "$SESSION_NAME" "$n")
+      _set_pane_label "$SESSION_NAME:0.$pidx" "$text" "$n"
+      ok "agent-$n  →  $text"
+      ;;
+    auto)
+      # Derive labels from each agent's current pane_title.
+      while read -r pidx; do
+        local n=$(( pidx + 1 ))
+        local title; title=$(tmux display-message -t "$SESSION_NAME:0.$pidx" -p '#{pane_title}')
+        # Strip a leading status glyph like ✳, ✻, ⠂, ⠐ that Claude uses
+        title="${title## }"
+        title="${title#✳ }"; title="${title#✻ }"; title="${title#⠂ }"; title="${title#⠐ }"
+        title="${title#● }"
+        local lbl; lbl=$(_short_label "$title")
+        _set_pane_label "$SESSION_NAME:0.$pidx" "$lbl" "$n"
+        printf '  %sagent-%s%s  →  %s\n' "$C_BOLD" "$n" "$C_RESET" "$lbl"
+      done < <(_agent_pane_indices "$SESSION_NAME")
+      ;;
+    clear)
+      local n=${1:-}
+      [[ -n "$n" ]] || die 'usage: supercode label clear <N>'
+      local pidx; pidx=$(_agent_pane_index "$SESSION_NAME" "$n")
+      tmux set-option -pqt "$SESSION_NAME:0.$pidx" -u "@label"
+      ok "cleared label for agent-$n"
+      ;;
+    list|"")
+      while read -r pidx; do
+        local n=$(( pidx + 1 ))
+        local lbl; lbl=$(tmux show-option -pqv -t "$SESSION_NAME:0.$pidx" "@label" 2>/dev/null || true)
+        local acc; acc=$(tmux show-option -pqv -t "$SESSION_NAME:0.$pidx" "@accent" 2>/dev/null || true)
+        printf '  agent-%s  accent=%s  label=%s\n' "$n" "${acc:-—}" "${lbl:-—}"
+      done < <(_agent_pane_indices "$SESSION_NAME")
+      ;;
+    *) die "unknown label subcommand: $sub (try: set | auto | list | clear)" ;;
+  esac
+}
+
+# ── brain pane + inter-pane helpers ───────────────────────────────────────
+
+# Read the brain pane's id (e.g. %12), empty if no brain pane registered.
+_brain_pane_id() {
+  tmux show-option -wqv -t "$1:0" "@brain-pane" 2>/dev/null || true
+}
+
+# List agent pane indices (numeric, ascending), excluding the brain pane.
+_agent_pane_indices() {
+  local session=$1
+  local brain_id
+  brain_id=$(_brain_pane_id "$session")
+  tmux list-panes -t "$session:0" -F '#{pane_id} #{pane_index}' 2>/dev/null \
+    | awk -v b="$brain_id" '$1!=b {print $2}' \
+    | sort -n
+}
+
+# Resolve 1-indexed agent number to its pane index; die if invalid.
+_agent_pane_index() {
+  local session=$1 n=$2
+  [[ "$n" =~ ^[0-9]+$ ]] || die "expected agent number, got '$n'"
+  local idx=$(( n - 1 ))
+  local brain_id brain_idx=""
+  brain_id=$(_brain_pane_id "$session")
+  if [[ -n "$brain_id" ]]; then
+    brain_idx=$(tmux list-panes -t "$session:0" -F '#{pane_id} #{pane_index}' \
+      | awk -v b="$brain_id" '$1==b {print $2; exit}')
+  fi
+  [[ "$idx" == "$brain_idx" ]] && die "agent $n is the brain pane"
+  tmux list-panes -t "$session:0" -F '#{pane_index}' | grep -qx "$idx" \
+    || die "no agent $n in session (pane index $idx not found)"
+  printf '%s' "$idx"
+}
+
+cmd_peek() {
+  require_repo
+  tmux has-session -t "$SESSION_NAME" 2>/dev/null \
+    || die "no session — run 'supercode' first"
+  local target=${1:-}
+  [[ -n "$target" ]] || die "usage: supercode peek <N|all> [--history [LINES]]"
+  shift || true
+
+  local history=0 lines=200
+  while (( $# )); do
+    case "$1" in
+      --history)
+        history=1; shift
+        if [[ "${1:-}" =~ ^[0-9]+$ ]]; then lines=$1; shift; fi
+        ;;
+      *) shift ;;
+    esac
+  done
+
+  _peek_one() {
+    local n=$1
+    local pidx; pidx=$(_agent_pane_index "$SESSION_NAME" "$n")
+    local pane="$SESSION_NAME:0.$pidx"
+    local title; title=$(tmux display-message -t "$pane" -p '#{pane_title}')
+    echo "${C_BOLD}── agent-$n ── ${title}${C_RESET}"
+    local wt="$WORKTREE_BASE/agent-$n"
+    if [[ -d "$wt" ]]; then
+      local gs; gs=$(git -C "$wt" status --short 2>/dev/null | head -10)
+      [[ -n "$gs" ]] && printf "%sgit:%s\n%s\n" "$C_DIM" "$C_RESET" "$gs"
+    fi
+    if (( history )); then
+      tmux capture-pane -p -t "$pane" -S -"$lines" -E -
+    else
+      tmux capture-pane -p -t "$pane"
+    fi
+  }
+
+  if [[ "$target" == "all" ]]; then
+    while read -r pidx; do
+      local n=$(( pidx + 1 ))
+      echo
+      _peek_one "$n"
+    done < <(_agent_pane_indices "$SESSION_NAME")
+  else
+    _peek_one "$target"
+  fi
+}
+
+cmd_tell() {
+  require_repo
+  tmux has-session -t "$SESSION_NAME" 2>/dev/null \
+    || die "no session — run 'supercode' first"
+  local n=${1:-}; shift || true
+  local msg=${1:-}
+  [[ -n "$n" && -n "$msg" ]] || die 'usage: supercode tell <N> "message"'
+  local pidx; pidx=$(_agent_pane_index "$SESSION_NAME" "$n")
+  tmux send-keys -t "$SESSION_NAME:0.$pidx" -l -- "$msg"
+  sleep 0.2
+  tmux send-keys -t "$SESSION_NAME:0.$pidx" Enter
+  ok "delivered to agent-$n"
+}
+
+cmd_broadcast() {
+  require_repo
+  tmux has-session -t "$SESSION_NAME" 2>/dev/null \
+    || die "no session — run 'supercode' first"
+  local msg=${1:-}
+  [[ -n "$msg" ]] || die 'usage: supercode broadcast "message"'
+  while read -r pidx; do
+    local n=$(( pidx + 1 ))
+    tmux send-keys -t "$SESSION_NAME:0.$pidx" -l -- "$msg"
+    sleep 0.1
+    tmux send-keys -t "$SESSION_NAME:0.$pidx" Enter
+    ok "→ agent-$n"
+  done < <(_agent_pane_indices "$SESSION_NAME")
+}
+
+# Create a brain pane in an existing session (no orientation sent here).
+# Echoes the new pane's id (%N) on stdout. Returns 1 if a brain already exists.
+_create_brain_pane() {
+  local session=$1
+  local existing
+  existing=$(_brain_pane_id "$session")
+  if [[ -n "$existing" ]] \
+     && tmux list-panes -t "$session:0" -F '#{pane_id}' | grep -qx "$existing"; then
+    printf '%s' "$existing"
+    return 1
+  fi
+  tmux split-window -t "$session:0" -v -f -c "$REPO_ROOT"
+  local brain_idx brain_id
+  brain_idx=$(tmux list-panes -t "$session:0" -F '#{pane_index}' | sort -n | tail -1)
+  brain_id=$(tmux list-panes -t "$session:0" -F '#{pane_index} #{pane_id}' \
+    | awk -v i="$brain_idx" '$1==i {print $2; exit}')
+  tmux set-option -wq -t "$session:0" "@brain-pane" "$brain_id"
+  tmux select-pane -t "$brain_id" -T "🧠 brain"
+  local win_h
+  win_h=$(tmux display-message -t "$session:0" -p '#{window_height}')
+  tmux resize-pane -t "$brain_id" -y "$(( win_h * 44 / 100 ))"
+  tmux send-keys -t "$brain_id" "clear && claude" Enter
+  printf '%s' "$brain_id"
+}
+
+cmd_brain() {
+  require_repo
+  tmux has-session -t "$SESSION_NAME" 2>/dev/null \
+    || die "no session — run 'supercode' first"
+
+  local brain_id
+  if ! brain_id=$(_create_brain_pane "$SESSION_NAME"); then
+    warn "brain pane already exists — focusing it"
+    tmux select-pane -t "$brain_id"
+    return 0
+  fi
+
+  # Count workers (excluding the brain we just added).
+  local agent_count
+  agent_count=$(( $(tmux list-panes -t "$SESSION_NAME:0" | wc -l) - 1 ))
+
+  # Post-hoc orientation: tell the brain about the existing session and helpers.
+  local prompt
+  prompt="You are the Brain for this supercode session — orchestrator of $agent_count parallel Claude agents (agent-1 .. agent-$agent_count) working in worktrees at $WORKTREE_BASE/agent-K. Use these shell helpers: 'supercode peek <N>' to read agent N's screen, 'supercode peek all' for a snapshot of every agent (titles + git status + recent screen), 'supercode tell <N> \"msg\"' to send a message to one agent's Claude prompt, 'supercode broadcast \"msg\"' to send to all. You coordinate; you do not write code yourself. When the user asks how things are going, run 'supercode peek all' first. Reply 'ready' when oriented."
+  (
+    sleep "$BOOT_DELAY"
+    tmux send-keys -t "$brain_id" -l -- "$prompt"
+    sleep 0.2
+    tmux send-keys -t "$brain_id" Enter
+  ) >/dev/null 2>&1 &
+  disown || true
+
+  # Rebalance so workers re-tile and brain settles at ~44% height.
+  "$0" __rebalance "$SESSION_NAME" >/dev/null 2>&1 || true
+  "$0" __rebalance "$SESSION_NAME" >/dev/null 2>&1 || true
+
+  ok "Brain pane added. Orientation prompt arrives in ${BOOT_DELAY}s."
+  info "Click the brain pane or use Ctrl-b ↓ to focus it."
+}
+
+# ── dispatch ──────────────────────────────────────────────────────────────
+# Internal helper: rebalance the 3+2 (or N-row) layout of a session's window.
+# Detects rows by pane_top, equalizes pane widths within each row, then
+# equalizes row heights. If a brain pane is registered (@brain-pane), its row
+# gets ~44% of window height and others split the remainder. Idempotent.
+cmd_rebalance() {
+  local session="${1:?usage: supercode __rebalance <session>}"
+  local win="$session:0"
+  local n
+  n=$(tmux list-panes -t "$win" 2>/dev/null | wc -l) || return 0
+  [[ "$n" -ge 2 ]] || return 0
+
+  local win_w win_h
+  win_w=$(tmux display-message -t "$win" -p '#{window_width}')
+  win_h=$(tmux display-message -t "$win" -p '#{window_height}')
+
+  # Distinct row Y-coordinates, ascending (top first)
+  local -a rows
+  mapfile -t rows < <(tmux list-panes -t "$win" -F '#{pane_top}' | sort -un)
+  local row_count=${#rows[@]}
+  (( row_count >= 1 )) || return 0
+
+  # For each row, collect panes sorted by pane_left and equalize widths
+  local r y w i pid
+  for ((r=0; r<row_count; r++)); do
+    y="${rows[$r]}"
+    local -a row_panes
+    mapfile -t row_panes < <(tmux list-panes -t "$win" -F '#{pane_top} #{pane_left} #{pane_id}' \
+      | awk -v y="$y" '$1==y {print $2" "$3}' | sort -n | awk '{print $2}')
+    local rn=${#row_panes[@]}
+    if (( rn > 1 )); then
+      w=$(( win_w / rn ))
+      for ((i=0; i<rn-1; i++)); do
+        tmux resize-pane -t "${row_panes[$i]}" -x "$w" 2>/dev/null || true
+      done
+    fi
+  done
+
+  # Compute per-row heights. If a brain pane exists, its row (whether it sits
+  # alone or shares the row with workers) gets 44% of window height — that gives
+  # the brain pane the vertical space it needs for Claude's TUI to be usable.
+  # Remaining rows split the rest equally.
+  if (( row_count > 1 )); then
+    local brain_pane_id; brain_pane_id=$(_brain_pane_id "$session")
+    local brain_row=-1
+    if [[ -n "$brain_pane_id" ]]; then
+      local brain_top
+      brain_top=$(tmux list-panes -t "$win" -F '#{pane_id} #{pane_top}' \
+        | awk -v b="$brain_pane_id" '$1==b {print $2; exit}')
+      for ((r=0; r<row_count; r++)); do
+        [[ "${rows[$r]}" == "$brain_top" ]] && brain_row=$r
+      done
+    fi
+
+    local -a row_heights
+    if (( brain_row >= 0 )); then
+      # Subtract row_count to account for the border row above each row.
+      local brain_h=$(( win_h * 44 / 100 ))
+      local other_h=$(( (win_h - brain_h - row_count) / (row_count - 1) ))
+      (( other_h < 3 )) && other_h=3
+      for ((r=0; r<row_count; r++)); do
+        if (( r == brain_row )); then row_heights[$r]=$brain_h
+        else                          row_heights[$r]=$other_h
+        fi
+      done
+    else
+      local row_h=$(( win_h / row_count ))
+      for ((r=0; r<row_count; r++)); do row_heights[$r]=$row_h; done
+    fi
+
+    # Apply (skip the last row — it absorbs the remainder).
+    for ((r=0; r<row_count-1; r++)); do
+      y="${rows[$r]}"
+      pid=$(tmux list-panes -t "$win" -F '#{pane_top} #{pane_id}' | awk -v y="$y" '$1==y {print $2; exit}')
+      tmux resize-pane -t "$pid" -y "${row_heights[$r]}" 2>/dev/null || true
+    done
+  fi
+}
+
+case "${1:-}" in
+  "")                        cmd_start ;;
+  -i|--interactive)          prompt_tasks_interactive ;;
+  -f|--file)                 shift; read_tasks_from_file "${1:-}" ;;
+  attach|a)                  cmd_attach ;;
+  list|ls|status)            cmd_list ;;
+  save)                      cmd_save ;;
+  unsave)                    cmd_unsave ;;
+  rollback)                  cmd_rollback ;;
+  kill)                      cmd_kill ;;
+  clean)                     shift; cmd_clean "$@" ;;
+  brain)                     cmd_brain ;;
+  peek)                      shift; cmd_peek "$@" ;;
+  tell)                      shift; cmd_tell "$@" ;;
+  broadcast)                 shift; cmd_broadcast "$@" ;;
+  label)                     shift; cmd_label "$@" ;;
+  __rebalance)               shift; cmd_rebalance "$@" ;;
+  -h|--help|help)            usage ;;
+  *)                         cmd_start "$@" ;;
+esac
