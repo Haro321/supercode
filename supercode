@@ -29,6 +29,18 @@ else
   exit 1
 fi
 
+# Per-role skill files (optional — falls back to bash description if absent)
+if [[ -n "${SUPERCODE_AGENTS:-}" && -d "$SUPERCODE_AGENTS" ]]; then
+  : # user override
+elif [[ -d "$_sc_dir/agents" ]]; then
+  SUPERCODE_AGENTS="$_sc_dir/agents"
+elif [[ -d "$HOME/.local/share/supercode/agents" ]]; then
+  SUPERCODE_AGENTS="$HOME/.local/share/supercode/agents"
+else
+  SUPERCODE_AGENTS=""  # no skills available, that's fine
+fi
+export SUPERCODE_AGENTS
+
 # Source core libraries
 source "$SUPERCODE_LIB/ui.sh"
 source "$SUPERCODE_LIB/git.sh"

@@ -3,6 +3,7 @@ set -euo pipefail
 
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 LIB_DIR="${LIB_DIR:-$HOME/.local/share/supercode/lib}"
+AGENTS_DIR="${AGENTS_DIR:-$HOME/.local/share/supercode/agents}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Check bash version
@@ -25,6 +26,7 @@ fi
 
 mkdir -p "$INSTALL_DIR"
 mkdir -p "$LIB_DIR/commands"
+mkdir -p "$AGENTS_DIR"
 
 # Copy main script
 cp "$SCRIPT_DIR/supercode" "$INSTALL_DIR/supercode"
@@ -34,6 +36,13 @@ chmod +x "$INSTALL_DIR/supercode"
 cp "$SCRIPT_DIR"/lib/*.sh "$LIB_DIR/"
 cp "$SCRIPT_DIR"/lib/commands/*.sh "$LIB_DIR/commands/"
 
+# Copy per-role skill files (agents/<role>.md). Optional — only if present
+# in the repo. The runtime falls back to bash descriptions if these are
+# missing, so an old checkout still works.
+if [[ -d "$SCRIPT_DIR/agents" ]] && compgen -G "$SCRIPT_DIR/agents/*.md" > /dev/null; then
+  cp "$SCRIPT_DIR"/agents/*.md "$AGENTS_DIR/"
+fi
+
 # Create a symlink so the installed script can find lib/
 # The script looks for lib/ relative to itself, so we symlink it
 ln -sfn "$LIB_DIR/.." "$INSTALL_DIR/supercode-lib" 2>/dev/null || true
@@ -41,6 +50,7 @@ ln -sfn "$LIB_DIR/.." "$INSTALL_DIR/supercode-lib" 2>/dev/null || true
 echo "supercode installed:"
 echo "  script:  $INSTALL_DIR/supercode"
 echo "  lib:     $LIB_DIR/"
+echo "  agents:  $AGENTS_DIR/"
 
 if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
   echo ""

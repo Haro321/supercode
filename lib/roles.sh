@@ -161,6 +161,16 @@ _build_role_prompt() {
     prompt+=$(_build_reverser_extended_prompt)
   fi
 
+  # Append per-role skill file if available (agents/<role>.md). Skills are
+  # markdown skill files (e.g. mirrored from affaan-m/ecc) — they give the
+  # agent domain-specific patterns, checklists, and concrete examples.
+  if [[ -n "${SUPERCODE_AGENTS:-}" && -f "$SUPERCODE_AGENTS/$role.md" ]]; then
+    prompt+="DOMAIN SKILL — read carefully, apply throughout:"$'\n'
+    prompt+="--- BEGIN $role.md ---"$'\n'
+    prompt+="$(cat "$SUPERCODE_AGENTS/$role.md")"$'\n'
+    prompt+="--- END $role.md ---"$'\n\n'
+  fi
+
   prompt+="YOUR TASK: $task"
 
   printf '%s' "$prompt"
