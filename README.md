@@ -1,6 +1,6 @@
 # supercode
 
-Run multiple [Claude Code](https://claude.ai/code) sessions in parallel — each in its own git worktree, all inside one tmux window.
+A local multi-agent engineering team that turns one feature request into a spec, assigns specialized agents, coordinates file ownership, verifies the result, reviews the diff, and safely merges the work.
 
 ![Bash](https://img.shields.io/badge/Bash-4.0%2B-green)
 ![License](https://img.shields.io/badge/License-MIT-blue)
@@ -9,23 +9,38 @@ Run multiple [Claude Code](https://claude.ai/code) sessions in parallel — each
 
 ## Why
 
-A single AI coding agent is powerful. But real projects have multiple independent pieces — an API, a frontend, tests, database migrations, documentation. Doing them one at a time is slow.
+A single AI coding agent is powerful. But real projects have multiple independent pieces -- an API, a frontend, tests, database migrations, documentation. Doing them one at a time is slow.
 
-**supercode** lets you work on all of them at once. Five Claude Code agents run in parallel, each in an isolated copy of your repo, while a sixth **Brain** agent orchestrates the whole thing. What used to take an hour of sequential back-and-forth now takes minutes.
+**supercode** runs multiple Claude Code agents in parallel, each in an isolated git worktree, with a Brain agent that orchestrates the whole thing. It can plan the work, assign specialized roles, enforce shared contracts, review the output, and verify it builds.
+
+```bash
+supercode "add email/password auth with dashboard redirect"
+```
+
+This launches the Brain. You talk to it, it picks the right roles (max 5 agents), creates a spec and contracts, then you run `supercode dispatch` to launch the agents.
+
+## How it works
+
+1. **Talk** -- You run `supercode` and describe what you want to build
+2. **Plan** -- Brain analyzes the task, picks roles, creates spec + contracts + plan.json
+3. **Launch** -- Brain runs `supercode dispatch` itself — agents appear as new panes
+4. **Coordinate** -- Brain monitors progress, resolves blockers, prevents conflicts
+5. **Review** -- Reviewer agent inspects all diffs against the spec
+6. **Verify** -- QA runs build/test/lint across all worktrees
+7. **Save** -- All agent work merges into your branch with conflict prediction
 
 ## The Brain
 
-The Brain is the key difference between supercode and just opening five terminals.
+The Brain is the first thing that launches. It's your team lead.
 
-When you launch supercode with tasks, the Brain:
+When you run `supercode`, the Brain:
 
-1. **Reads your tasks** and figures out how they relate to each other
-2. **Designs a coordination plan** — shared interfaces, naming conventions, file ownership — so agents don't step on each other
-3. **Dispatches composed instructions** to each worker, telling them not just *what* to build but *what the other agents are doing* so they stay compatible
-4. **Monitors progress** by peeking at agent screens and checking their git status
-5. **Follows up** with agents that get stuck or drift off course
-
-Without the Brain, five agents writing code in the same repo would produce five conflicting implementations. The Brain turns them into a coordinated team.
+1. **Talks to you** to understand what you want to build
+2. **Picks the right roles** -- up to 5 specialized agents from 17 available roles
+3. **Creates contracts** -- shared interfaces, naming conventions, file ownership -- so agents don't conflict
+4. **Writes the plan** -- SPEC.md, CONTRACTS.md, AGENTS.md, and plan.json
+5. **Launches the agents** -- runs `supercode dispatch` itself, agents appear as new panes
+6. **Coordinates** -- monitors progress via `supercode peek all` and follows up with stuck agents
 
 ## Install
 
@@ -35,61 +50,236 @@ cd supercode
 ./install.sh
 ```
 
-Or just copy the script:
+**Requires:** Bash 4+, git, tmux, [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude` in PATH). Optional: `jq` (for JSON state export).
+
+Run `supercode doctor` to verify your setup.
+
+## Quick start
 
 ```bash
-cp supercode ~/.local/bin/supercode
-chmod +x ~/.local/bin/supercode
-```
-
-**Requires:** Bash 4+, git, tmux, and the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude` in your PATH). On macOS, `brew install bash tmux`.
-
-## Usage
-
-```bash
-# Just launch — the brain asks what you want to build
+# Default: Brain launches, you talk, it plans and launches agents itself
 supercode
 
-# Give it tasks — the brain coordinates and dispatches
-supercode "build the auth API" "create the React frontend" "write integration tests"
+# With context: Brain gets your task, plans, and launches agents automatically
+supercode "add user dashboard with settings"
 
-# Direct mode: one agent per task, no brain
-supercode --direct "fix login bug" "add rate limiting"
+# Skip planning: launch preset roles immediately
+supercode --preset webapp "add checkout page"
+
+# Skip planning: specify exact roles
+supercode --roles backend,frontend,qa "add API keys feature"
 ```
 
-### Talking to agents
+## Agent roles
+
+Instead of generic numbered workers, supercode assigns specialized roles:
 
 ```bash
-supercode peek all              # see what every agent is doing
-supercode peek 3                # check on agent 3
-supercode tell 2 "use JWT"      # send a message to agent 2
-supercode broadcast "stop"      # message all agents
+supercode --preset webapp "add checkout page"
+# Launches: architect, backend, frontend, database, qa
+
+supercode --preset bugfix "fix login redirect loop"
+# Launches: reproducer, debugger, fixer, qa
+
+supercode --roles backend,frontend,security "add API keys feature"
+# Launches: exactly the roles you specify
 ```
 
-### Saving the work
+### Available presets
+
+| Preset | Roles |
+|--------|-------|
+| `webapp` | architect, backend, frontend, database, qa |
+| `api` | architect, backend, database, security, qa |
+| `fullstack` | architect, backend, frontend, database, qa, reviewer |
+| `ui` | architect, frontend, ux, accessibility, qa |
+| `bugfix` | reproducer, debugger, fixer, qa |
+| `refactor` | mapper, refactor, compatibility, qa |
+| `security` | architect, security, backend, qa |
+
+Run `supercode presets` or `supercode roles` to see all options.
+
+### Available roles
+
+| Role | Responsibility |
+|------|---------------|
+| `architect` | System design, API contracts, data models, file ownership |
+| `backend` | Server logic, API routes, services, middleware |
+| `frontend` | UI components, pages, forms, client-side logic |
+| `database` | Schemas, migrations, seeds, queries |
+| `qa` | Tests, build/lint/typecheck verification |
+| `security` | Vulnerability auditing, auth, secrets |
+| `reviewer` | Code review, spec compliance, quality |
+| `docs` | Documentation, README, API docs |
+| `reproducer` | Bug reproduction with minimal test cases |
+| `debugger` | Root cause investigation |
+| `fixer` | Targeted bug fixes |
+
+## Default workflow
+
+This is the standard way to use supercode:
 
 ```bash
-supercode save                  # commit + merge all agent work into your branch
-supercode unsave                # undo the last save
-supercode rollback              # rewind to the state before supercode launched
+# Step 1: Launch Brain -- tell it what you want (or just chat)
+supercode "add email/password auth with dashboard redirect"
+
+# Step 2: Brain plans, picks roles, and launches agents automatically
+# ... agent panes appear in the tmux session ...
+
+# Step 3: Monitor progress
+supercode status
+supercode peek all
+
+# Step 5: Review
+supercode review
+
+# Step 6: Verify
+supercode verify
+
+# Step 7: Save
+supercode save --dry-run
+supercode save
 ```
 
-### Cleanup
+The Brain creates these files in `.supercode/`:
+
+| File | Purpose |
+|------|---------|
+| `SPEC.md` | Requirements and acceptance criteria |
+| `CONTRACTS.md` | Shared API contracts, types, interfaces |
+| `AGENTS.md` | Agent role assignments and tasks |
+| `plan.json` | Machine-readable plan for `supercode dispatch` |
+| `ownership.json` | File ownership rules per role |
+| `REVIEW.md` | Review findings (created by `supercode review`) |
+
+## File ownership
+
+Agents are assigned file ownership to prevent conflicts:
 
 ```bash
-supercode kill                  # kill the tmux session (worktrees stay)
-supercode clean                 # kill session + remove worktrees
+supercode claim backend "src/api/**"
+supercode claim frontend "src/components/**"
+supercode claims                          # show ownership map
+supercode conflicts                       # detect violations
 ```
 
-## How it works
+When roles are used, default ownership is assigned automatically. `supercode save` checks for ownership violations before merging.
 
-1. Snapshots your current branch so you can always roll back
-2. Creates a git worktree per agent — isolated copies of your repo that share the same `.git`
-3. Opens a tmux session with a 2x3 grid: 5 worker panes + 1 brain pane
-4. Each worker runs `claude` in its own worktree. The brain runs in the main repo
-5. When you're done, `supercode save` auto-commits each agent's changes and merges them all into your branch
+## Brain subcommands
 
-No files conflict because each agent works in its own worktree on its own branch. The brain makes sure they don't *logically* conflict either.
+Talk to the Brain directly:
+
+```bash
+supercode brain plan         # ask brain to create planning docs
+supercode brain status       # ask brain to check all agents and update STATUS.md
+supercode brain reassign 3 "also handle error states"
+supercode brain unblock      # ask brain to help stuck agents
+supercode brain review       # ask brain to review all agent work
+supercode brain summarize    # get a full project summary
+```
+
+## Approval gates
+
+Control agent work:
+
+```bash
+supercode approve backend       # approve an agent's approach
+supercode approve 3             # approve by agent number
+supercode reject frontend "do not change the auth middleware"
+```
+
+## Monitoring
+
+```bash
+supercode status              # agents, roles, dirty state, commits
+supercode status --json       # machine-readable state
+supercode peek all            # screen content of every agent
+supercode peek 3              # check one agent
+supercode diff all            # files changed per agent
+supercode logs brain          # captured brain log
+supercode logs 1 --tail 100   # agent 1's log
+```
+
+## Verification
+
+Auto-detects your project type and runs the right commands:
+
+```bash
+supercode verify              # runs test/lint/build per worktree
+supercode verify --cmd "pytest && mypy ."   # custom commands
+```
+
+Supported: Node/React/Next.js, Python/Django/FastAPI, Rust, Go, PHP, Ruby, Java.
+
+## Saving
+
+```bash
+supercode save --dry-run               # preview with conflict prediction + ownership checks
+supercode save                         # commit + merge all agents
+supercode save --into feature/result   # merge into a different branch
+supercode unsave                       # undo the last save
+supercode rollback                     # rewind to pre-launch state
+```
+
+Protected branches (`main`, `master`, `production`) trigger a warning before merge.
+
+## Is this safe?
+
+- **Isolation**: Each agent gets its own git worktree and branch. No shared working directory.
+- **Rollback**: Pre-launch snapshot recorded. `supercode rollback` undoes everything.
+- **Dry runs**: `supercode save --dry-run` previews merges, predicts conflicts, checks ownership.
+- **Guarded cleanup**: `supercode clean` refuses to delete unsaved work without `--force`.
+- **Protected branches**: Warning before saving into main/master/production.
+- **Path safety**: All `rm -rf` operations verify paths are inside `SUPERCODE_HOME`.
+- **Ownership enforcement**: `supercode save` reports files modified outside assigned ownership.
+
+## Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SUPERCODE_HOME` | `~/.supercode` | Where worktrees are stored |
+| `SUPERCODE_AGENTS` | `5` | Default worker count (when not using presets/roles) |
+| `SUPERCODE_CLAUDE_ARGS` | *(empty)* | Extra args for `claude` (e.g. `--dangerously-skip-permissions`) |
+| `SUPERCODE_BOOT_DELAY` | `3` | Seconds to wait for claude to boot |
+| `SUPERCODE_SNAPSHOT` | `commit` | Pre-launch handling: `commit`, `stash`, or `none` |
+
+## Project structure
+
+```
+supercode/
+  supercode                    # main entry point
+  lib/
+    ui.sh                      # colors and output helpers
+    git.sh                     # git helpers and safety guards
+    tmux_helpers.sh            # tmux pane helpers and theme
+    agents.sh                  # agent labels and accents
+    brain.sh                   # brain prompts and pane creation
+    session.sh                 # session state tracking
+    roles.sh                   # 17 agent roles, 10 presets
+    contracts.sh               # file ownership, project detection, contracts
+    commands/
+      plan.sh                  # plan phase (spec + contracts)
+      dispatch.sh              # role-based agent dispatch
+      start.sh                 # classic launch (with --preset/--roles support)
+      save.sh                  # merge with dry-run, conflict prediction, ownership
+      review_cmd.sh            # reviewer agent
+      verify.sh                # QA verification
+      claim.sh                 # file ownership management
+      approve.sh               # approval/rejection gates
+      brain_cmd.sh             # brain subcommands
+      status.sh                # role-aware status display
+      ...                      # tell, broadcast, peek, diff, logs, etc.
+  tests/                       # bats test suite (32 tests)
+  install.sh
+```
+
+## Known limitations
+
+- The Brain coordinates via prompts, not a strict lock manager. Logical conflicts can still happen.
+- `save` may hit merge conflicts if agents modify the same files despite ownership rules.
+- Running many Claude sessions uses API quota quickly.
+- Works best in terminal/tmux environments.
+- `jq` is optional but required for JSON state export and ownership enforcement.
 
 ## License
 
