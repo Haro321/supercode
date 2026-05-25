@@ -2,34 +2,25 @@
 # Role definitions, presets, and role-aware prompt generation.
 
 declare -gA ROLE_DESCRIPTIONS=(
-  [architect]="Design system architecture, define API contracts, data models, shared types, module boundaries, and file ownership. Produce SPEC, CONTRACTS, and AGENTS docs. You do NOT write implementation code — you write the specs and contracts other agents follow."
-  [backend]="Implement server-side logic: REST/GraphQL endpoints, services, middleware, authentication, authorization, validation, error handling, observability hooks, and business logic. Follow the contracts and data models defined by the architect."
-  [frontend]="Build UI components, pages, forms, client-side state, routing, data fetching, error states, and loading states. Follow the component structure and API contracts defined by the architect."
-  [database]="Create database schemas, migrations, seeds, indexes, constraints, and query helpers. Optimize queries for the expected access patterns. Define the data layer backend and other agents depend on."
-  [qa]="Write comprehensive tests (unit, integration, e2e) and run the project's build/test/lint/typecheck commands. Cover happy paths, edge cases, error paths, and key performance scenarios. Report failures to the Brain with the agent most likely responsible."
-  [security]="Audit for security vulnerabilities: OWASP Top 10, injection, XSS, CSRF, auth bypass, IDOR, SSRF, secrets exposure, insecure deps, weak crypto, permission and tenant-isolation issues. Produce findings as actionable items with severity and reproduction steps."
-  [reviewer]="Review all agent diffs for correctness, consistency with the spec/contracts, style, and architectural fit. Write a structured review report grouped by severity. Do NOT modify code — only review and report."
-  [docs]="Write and update documentation: README, API docs, inline doc comments, .env.example, CHANGELOG, ADRs, setup guides, and runbooks. Ensure docs reflect the actual implementation and stay consistent across files."
-  [devops]="Handle CI/CD pipelines, Dockerfiles, compose files, deployment configs, environment setup, secrets management, and infrastructure-as-code. Ensure the project builds reproducibly and deploys safely."
-  [refactor]="Refactor existing code for clarity, performance, and maintainability. Preserve all existing behavior, keep changes incremental, and ensure each step leaves the codebase passing tests."
-  [reproducer]="Reproduce the reported bug with a minimal test case. Create a failing test that demonstrates the issue and document exact reproduction steps. Do NOT fix the bug — only reproduce and isolate it."
-  [debugger]="Investigate the root cause of the bug: trace call paths, read logs, inspect state, narrow with bisection where useful. Identify the exact location and cause and report findings to the Brain — do not patch."
-  [fixer]="Implement a targeted fix for the identified bug. Keep changes minimal and focused on the root cause. Add a regression test that fails without the fix and passes with it."
-  [ux]="Audit and improve user experience: interaction flows, error states, loading states, empty states, success feedback, copy clarity, and edge cases. Focus on usability, not visual styling."
-  [accessibility]="Ensure WCAG AA compliance: semantic HTML, ARIA labels, keyboard navigation, focus management, screen reader support, color contrast, motion-reduction preferences, and form labeling."
-  [mapper]="Map the codebase: dependencies, call graphs, module boundaries, public vs internal APIs, and impact analysis for planned changes. Produce a clear map other agents can use as a starting point."
-  [compatibility]="Ensure backward compatibility during refactoring or breaking changes: API stability, migration paths, deprecation warnings, feature flags, and version-skew handling between client and server."
+  [architect]="Design system architecture, define API contracts, data models, shared types, and file ownership. You do NOT write implementation code — you write specs and contracts that other agents follow."
+  [backend]="Implement server-side logic: API routes, services, middleware, authentication, and business logic. Follow the contracts and data models defined by the architect."
+  [frontend]="Build UI components, pages, forms, client-side state, and routing. Follow the component structure and API contracts defined by the architect."
+  [database]="Create database schemas, migrations, seeds, and query helpers. Define the data layer that backend and other agents depend on."
+  [qa]="Write comprehensive tests (unit, integration, e2e) and run the project's build/test/lint/typecheck commands. Report failures to the Brain with the agent most likely responsible."
+  [security]="Audit for security vulnerabilities: injection, XSS, CSRF, auth bypass, secrets exposure, insecure dependencies, and permission issues. Produce findings as actionable items."
+  [reviewer]="Review all agent diffs for correctness, consistency, style, and adherence to the spec and contracts. Write a structured review report. Do NOT modify code — only review and report."
+  [docs]="Write and update documentation: README, API docs, inline doc comments, .env.example, CHANGELOG, and setup guides. Ensure docs match the implementation."
+  [devops]="Handle CI/CD pipelines, Dockerfiles, deployment configs, environment setup, and infrastructure-as-code. Ensure the project builds and deploys correctly."
+  [refactor]="Refactor existing code for clarity, performance, and maintainability. Preserve all existing behavior and ensure backward compatibility."
+  [reproducer]="Reproduce the reported bug with a minimal test case. Create a failing test that demonstrates the issue. Do NOT fix the bug — only reproduce it."
+  [debugger]="Investigate the root cause of the bug through code analysis, tracing call paths, and reading logs. Identify the exact location and cause. Report findings to the Brain."
+  [fixer]="Implement a targeted fix for the identified bug. Keep changes minimal and focused. Add a regression test for the fix."
+  [ux]="Audit and improve user experience: interaction flows, error states, loading states, empty states, and user feedback. Focus on usability, not visual design."
+  [accessibility]="Ensure accessibility compliance: WCAG AA, semantic HTML, ARIA labels, keyboard navigation, screen reader support, color contrast, and focus management."
+  [mapper]="Map the codebase: dependencies, call graphs, module boundaries, and impact analysis for planned changes. Produce a clear map that other agents can use."
+  [compatibility]="Ensure backward compatibility during refactoring: API stability, migration paths, deprecation warnings, and feature flags where needed."
   [reverser]="Reverse engineer binaries using Ghidra (static analysis, decompilation via GhidraMCP) and x64dbg/gdb (dynamic analysis, debugging). Analyze executables, shared libraries, firmware, and protocols. Identify functions, recover data structures, trace control flow, find vulnerabilities, and document findings."
-
-  # --- New roles (drawn from VoltAgent and wshobson collections) ---
-  [mobile]="Build mobile apps: iOS (Swift/SwiftUI), Android (Kotlin/Jetpack), or cross-platform (React Native, Flutter). Handle navigation, offline-first data, push notifications, deep links, permissions, and platform-specific UI conventions."
-  [performance]="Profile, benchmark, and optimize for latency, throughput, memory, bundle size, and battery. Establish baselines before changing anything, identify the actual bottleneck (don't guess), and validate improvements with measurements."
-  [api]="Design API contracts (REST, GraphQL, gRPC, WebSocket): endpoints, schemas, versioning, auth flows, error shapes, pagination, idempotency, and rate limits. Produce a contract other agents implement against."
-  [ml]="ML/AI engineering: data prep, feature engineering, model training and evaluation, inference pipelines, deployment, monitoring for drift, and reproducible experiments. Pick the simplest model that meets the success metric."
-  [data]="Data engineering: ETL/ELT pipelines, warehouses, lakes, streaming, schema evolution, data quality checks, and lineage. Design for idempotency, late-arriving data, and backfills."
-  [sre]="Site reliability: define SLIs/SLOs, manage error budgets, set up observability (metrics, logs, traces), design incident response, write postmortems, and reduce toil through automation."
-  [prompt]="Prompt engineering for LLM apps: structure prompts and system instructions, design few-shot examples, define output schemas, build evals with golden datasets, and tune for cost, latency, and quality."
-  [legacy]="Modernize legacy code with gradual, behavior-preserving migrations: strangler-fig patterns, parallel-run validation, characterization tests before changes, and incremental upgrades over big-bang rewrites."
+  [selfmod]="Modify and improve the supercode tool itself. You are editing the tool that launched you. Supercode lives at ~/.local/bin/supercode (main entry point) and ~/.local/share/supercode/lib/ (all library modules). Read and understand the existing code before making changes. Test your changes by running 'supercode doctor' and 'supercode --help' after edits."
 )
 
 declare -gA ROLE_DEFAULT_OWNERSHIP=(
@@ -51,19 +42,12 @@ declare -gA ROLE_DEFAULT_OWNERSHIP=(
   [mapper]=""
   [compatibility]=""
   [reverser]="analysis/**,notes/**,scripts/**,*.py,*.java,*.gdt,*.h,*.c"
-  [mobile]="ios/**,android/**,mobile/**,src/screens/**,src/navigation/**,App.tsx,App.jsx,App.kt,App.swift"
-  [performance]="bench/**,benchmarks/**,perf/**"
-  [api]="api/**,src/api/**,openapi*,*.proto,schema.graphql,graphql/**"
-  [ml]="ml/**,models/**,notebooks/**,training/**,evals/**,*.ipynb"
-  [data]="pipelines/**,etl/**,dbt/**,airflow/**,dags/**,data/**"
-  [sre]="observability/**,monitoring/**,alerts/**,runbooks/**,slo/**,prometheus/**,grafana/**"
-  [prompt]="prompts/**,evals/**,llm/**,src/prompts/**"
-  [legacy]=""
+  [selfmod]="~/.local/bin/supercode,~/.local/share/supercode/lib/**"
 )
 
 declare -gA PRESETS=(
   [webapp]="architect,backend,frontend,database,qa"
-  [api]="architect,api,backend,database,security,qa"
+  [api]="architect,backend,database,security,qa"
   [fullstack]="architect,backend,frontend,database,qa,reviewer"
   [ui]="architect,frontend,ux,accessibility,qa"
   [bugfix]="reproducer,debugger,fixer,qa"
@@ -74,12 +58,6 @@ declare -gA PRESETS=(
   [frontend-only]="architect,frontend,ux,qa"
   [reverse]="reverser,mapper,security,docs"
   [malware]="reverser,security,mapper,debugger"
-  [mobile-app]="architect,mobile,backend,api,qa"
-  [ml-project]="architect,ml,data,backend,qa"
-  [perf]="mapper,performance,qa"
-  [incident]="sre,debugger,fixer,qa"
-  [llm-app]="architect,prompt,backend,api,qa"
-  [modernize]="mapper,legacy,refactor,compatibility,qa"
 )
 
 resolve_preset() {
@@ -113,11 +91,14 @@ list_roles() {
 }
 
 _build_role_prompt() {
-  local role=$1 task=$2 all_roles=$3 ownership=$4 agent_deps=${5:-""}
+  local role=$1 task=$2 all_roles=$3 ownership=$4 agent_deps=${5:-""} agent_n=${6:-""}
   local desc="${ROLE_DESCRIPTIONS[$role]:-Agent}"
   local prompt=""
 
-  prompt+="You are the ${role^^} agent in a supercode multi-agent session."$'\n\n'
+  local signal_key="$role"
+  [[ -n "$agent_n" ]] && signal_key="${role}_${agent_n}"
+
+  prompt+="You are the ${role^^} agent (agent-${agent_n:-?}) in a supercode multi-agent session."$'\n\n'
   prompt+="YOUR ROLE: $desc"$'\n\n'
 
   if [[ -n "$ownership" ]]; then
@@ -129,7 +110,7 @@ _build_role_prompt() {
   if [[ -n "$agent_deps" ]]; then
     prompt+="DEPENDENCIES: You depend on: $agent_deps"$'\n'
     prompt+="Before starting your main work, check if your dependencies are done:"$'\n'
-    prompt+="  cat shared/status/<role>.json"$'\n'
+    prompt+="  cat shared/status/<dep>_*.json"$'\n'
     prompt+="If a dependency's status is not \"done\", prepare by reviewing .supercode/SPEC.md and CONTRACTS.md, setting up your file structure, and checking back. Once all dependencies show \"done\", start your main work."$'\n\n'
   fi
 
@@ -140,10 +121,11 @@ _build_role_prompt() {
   prompt+="  shared/outputs/   — outputs other agents might need (generated files, schemas, etc.)"$'\n\n'
 
   prompt+="STATUS SIGNALS:"$'\n'
-  prompt+="Update your status so other agents and the Brain know your progress. Write JSON to shared/status/$role.json:"$'\n'
-  prompt+="  Working:  echo '{\"role\":\"$role\",\"status\":\"working\",\"message\":\"implementing API routes\"}' > shared/status/$role.json"$'\n'
-  prompt+="  Blocked:  echo '{\"role\":\"$role\",\"status\":\"blocked\",\"message\":\"need database schema from database agent\"}' > shared/status/$role.json"$'\n'
-  prompt+="  Done:     echo '{\"role\":\"$role\",\"status\":\"done\",\"message\":\"all API routes implemented and tested\"}' > shared/status/$role.json"$'\n'
+  prompt+="Update your status so other agents and the Brain know your progress. Write JSON to shared/status/$signal_key.json:"$'\n'
+  prompt+="  Working:  echo '{\"role\":\"$role\",\"status\":\"working\",\"message\":\"implementing API routes\",\"agent\":\"$agent_n\"}' > shared/status/$signal_key.json"$'\n'
+  prompt+="  Blocked:  echo '{\"role\":\"$role\",\"status\":\"blocked\",\"message\":\"need database schema from database agent\",\"agent\":\"$agent_n\"}' > shared/status/$signal_key.json"$'\n'
+  prompt+="  Done:     echo '{\"role\":\"$role\",\"status\":\"done\",\"message\":\"all API routes implemented and tested\",\"agent\":\"$agent_n\"}' > shared/status/$signal_key.json"$'\n'
+  prompt+="IMPORTANT: Always write to shared/status/$signal_key.json — this is YOUR unique status file. Do not write to any other status file."$'\n'
   prompt+="Update your status at key milestones and when you finish."$'\n\n'
 
   prompt+="COORDINATION RULES:"$'\n'
@@ -159,16 +141,8 @@ _build_role_prompt() {
   # Role-specific extended prompts
   if [[ "$role" == "reverser" ]]; then
     prompt+=$(_build_reverser_extended_prompt)
-  fi
-
-  # Append per-role skill file if available (agents/<role>.md). Skills are
-  # markdown skill files (e.g. mirrored from affaan-m/ecc) — they give the
-  # agent domain-specific patterns, checklists, and concrete examples.
-  if [[ -n "${SUPERCODE_SKILLS:-}" && -f "$SUPERCODE_SKILLS/$role.md" ]]; then
-    prompt+="DOMAIN SKILL — read carefully, apply throughout:"$'\n'
-    prompt+="--- BEGIN $role.md ---"$'\n'
-    prompt+="$(cat "$SUPERCODE_SKILLS/$role.md")"$'\n'
-    prompt+="--- END $role.md ---"$'\n\n'
+  elif [[ "$role" == "selfmod" ]]; then
+    prompt+=$(_build_selfmod_extended_prompt)
   fi
 
   prompt+="YOUR TASK: $task"
@@ -278,6 +252,72 @@ _build_reverser_extended_prompt() {
   printf '%s' "$p"
 }
 
+_build_selfmod_extended_prompt() {
+  local p=""
+
+  p+="SUPERCODE ARCHITECTURE:"$'\n\n'
+
+  p+="== FILE LAYOUT =="$'\n'
+  p+="  ~/.local/bin/supercode                  — main entry point (bash script). Parses args, sources libs, dispatches commands."$'\n'
+  p+="  ~/.local/share/supercode/lib/           — all library modules:"$'\n'
+  p+="    ui.sh           — color codes (C_BOLD, C_RED, etc.), die(), info(), warn(), header(), spinner"$'\n'
+  p+="    git.sh          — git helpers: worktree creation/cleanup, snapshot (commit/stash), branch management"$'\n'
+  p+="    tmux_helpers.sh — tmux session/pane management, layout tiling, pane labeling"$'\n'
+  p+="    agents.sh       — agent lifecycle: launch_agent(), send_task(), wait_for_boot()"$'\n'
+  p+="    brain.sh        — Brain orchestrator: plan generation, agent coordination, monitoring loop"$'\n'
+  p+="    session.sh      — session state: session name, lock files, state persistence (.supercode/)"$'\n'
+  p+="    roles.sh        — role definitions, presets, role-aware prompt generation (THIS FILE — you are here)"$'\n'
+  p+="    contracts.sh    — contract/spec generation and validation"$'\n'
+  p+="    signals.sh      — agent status signal reading/writing (working/blocked/done)"$'\n'
+  p+="  ~/.local/share/supercode/lib/commands/  — one file per subcommand:"$'\n'
+  p+="    start.sh        — cmd_start(): main launch flow (brain or direct mode)"$'\n'
+  p+="    attach.sh       — cmd_attach(): reattach to tmux session"$'\n'
+  p+="    status.sh       — cmd_status(): show agent status, branches, dirty state"$'\n'
+  p+="    save.sh         — cmd_save(): commit + merge all agent work into main branch"$'\n'
+  p+="    unsave.sh       — cmd_unsave(): undo the last save"$'\n'
+  p+="    rollback.sh     — cmd_rollback(): rewind to pre-launch snapshot"$'\n'
+  p+="    clean.sh        — cmd_clean(): kill session + remove worktrees"$'\n'
+  p+="    kill.sh         — cmd_kill(): kill tmux session only"$'\n'
+  p+="    peek.sh         — cmd_peek(): capture agent screen output"$'\n'
+  p+="    tell.sh         — cmd_tell(): send message to specific agent pane"$'\n'
+  p+="    broadcast.sh    — cmd_broadcast(): send message to all agents"$'\n'
+  p+="    diff.sh         — cmd_diff(): show files changed by each agent"$'\n'
+  p+="    logs.sh         — cmd_logs(): view per-agent logs"$'\n'
+  p+="    label.sh        — cmd_label(): set/get/clear pane border labels"$'\n'
+  p+="    plan.sh         — cmd_plan(): create spec + contracts without coding"$'\n'
+  p+="    dispatch.sh     — cmd_dispatch(): launch agents from existing plan"$'\n'
+  p+="    review_cmd.sh   — cmd_review(): launch reviewer agent"$'\n'
+  p+="    verify.sh       — cmd_verify(): run build/test/lint in worktrees"$'\n'
+  p+="    approve.sh      — cmd_approve(): approve an agent's approach"$'\n'
+  p+="    claim.sh        — cmd_claim()/cmd_claims()/cmd_conflicts(): file ownership"$'\n'
+  p+="    brain_cmd.sh    — cmd_brain_dispatch(): brain subcommands"$'\n'
+  p+="    doctor.sh       — cmd_doctor(): dependency/environment checks"$'\n'
+  p+="    interactive.sh  — prompt_tasks_interactive(): interactive task input"$'\n'
+  p+="    signals_cmd.sh  — cmd_signals(): show agent status signals"$'\n'
+  p+="    rebalance.sh    — cmd_rebalance(): internal rebalance"$'\n\n'
+
+  p+="== KEY CONCEPTS =="$'\n'
+  p+="- Each agent runs claude in its own git worktree under \$SUPERCODE_HOME/<repo>/agent-N"$'\n'
+  p+="- Brain is agent 0 (pane 0) — it orchestrates other agents via 'supercode tell' and 'supercode peek'"$'\n'
+  p+="- Roles define agent specialization: description, file ownership, and extended prompts"$'\n'
+  p+="- Presets are named groups of roles (e.g., webapp = architect,backend,frontend,database,qa)"$'\n'
+  p+="- Session state lives in .supercode/ directory in the repo root"$'\n'
+  p+="- Shared data between agents goes through ./shared/ in each worktree"$'\n'
+  p+="- Signals: agents write JSON to shared/status/<role>.json to coordinate"$'\n\n'
+
+  p+="== EDITING RULES =="$'\n'
+  p+="1. ALWAYS read the file you're editing first — understand existing patterns before changing anything."$'\n'
+  p+="2. Follow existing bash conventions: set -euo pipefail, quote variables, use local vars in functions."$'\n'
+  p+="3. To add a new subcommand: create lib/commands/<name>.sh with cmd_<name>(), add a case to the main script."$'\n'
+  p+="4. To add a new role: add to ROLE_DESCRIPTIONS, ROLE_DEFAULT_OWNERSHIP, and optionally a preset."$'\n'
+  p+="5. To add an extended prompt: create _build_<role>_extended_prompt() and wire it in _build_role_prompt()."$'\n'
+  p+="6. Test after every change: run 'supercode --help', 'supercode doctor', 'supercode roles', 'supercode presets'."$'\n'
+  p+="7. Do NOT break the running session you're in — your changes apply to future sessions."$'\n'
+  p+="8. Keep the usage() help text in the main script up to date when adding commands."$'\n\n'
+
+  printf '%s' "$p"
+}
+
 _build_role_dispatch_prompt() {
   local n=$1 task_description=$2
   shift 2
@@ -295,14 +335,34 @@ _build_role_dispatch_prompt() {
 
   prompt+="THE USER'S REQUEST: $task_description"$'\n\n'
 
-  prompt+="YOUR JOB RIGHT NOW:"$'\n'
-  prompt+="1. Analyze the request. Figure out how to split the work across these specialized roles."$'\n'
-  prompt+="2. If .supercode/CONTRACTS.md exists, reference it. If not, identify shared interfaces/types that agents must agree on and briefly state them in your dispatch messages."$'\n'
+  prompt+="IMPORTANT: If the request above is unclear, vague, or missing key details — ASK the user before dispatching agents. Do NOT guess. Say what's unclear, ask 1-3 short questions, and wait for the answer. Dispatching agents with a wrong understanding wastes all their work."$'\n\n'
+  prompt+="FORBIDDEN: supercode save, supercode unsave, supercode rollback — only the USER merges or reverts work."$'\n'
+  prompt+="SAFE TO USE: tell, broadcast, peek, diff, signals, verify, approve, reject, conflicts, label, dispatch, clean, kill."$'\n\n'
+
+  prompt+="STATUS SIGNALS: Each agent writes to shared/status/ROLE_N.json (e.g. backend_1.json). Use 'supercode signals' to see all."$'\n\n'
+
+  prompt+="YOUR JOB:"$'\n'
+  prompt+="1. Analyze the request. If anything is ambiguous, ask the user to clarify FIRST."$'\n'
+  prompt+="2. If .supercode/CONTRACTS.md exists, reference it. If not, identify shared interfaces/types that agents must agree on and state them in your dispatch messages."$'\n'
   prompt+="3. For each agent K, compose a role-aware task and dispatch it with:"$'\n'
   prompt+="     supercode tell K \"your composed message\""$'\n'
   prompt+="   Each message must include: (a) the agent's role identity, (b) its specific task, (c) what other agents are building, (d) file ownership rules, (e) any shared contracts to follow."$'\n'
-  prompt+="4. After dispatching all agents, say \"all agents launched\" and enter monitoring mode."$'\n'
-  prompt+="   Use 'supercode peek all' to check progress. Use 'supercode tell K ...' for follow-ups."$'\n\n'
+  prompt+="4. After dispatching, say \"all agents launched\" and enter monitoring mode."$'\n\n'
+
+  prompt+="MONITORING LOOP (repeat every 60-90 seconds after dispatch):"$'\n'
+  prompt+="  - Run 'supercode signals' to check status of all agents"$'\n'
+  prompt+="  - If any agent is BLOCKED or stale (>3 min no update): 'supercode peek N --history 200' to diagnose"$'\n'
+  prompt+="  - Send help: 'supercode tell N \"...\"'"$'\n'
+  prompt+="  - If an agent needs output from another: check shared/contracts/ and shared/outputs/, relay it"$'\n'
+  prompt+="  - If an agent is in an error loop: give them a different approach"$'\n'
+  prompt+="  DO NOT passively wait. Agents cannot message you — YOU must check on THEM."$'\n\n'
+
+  prompt+="REVIEW-FIX CYCLE (when all agents report done):"$'\n'
+  prompt+="  1. supercode diff all — review changes"$'\n'
+  prompt+="  2. supercode verify — check build/test/lint"$'\n'
+  prompt+="  3. supercode conflicts — check ownership violations"$'\n'
+  prompt+="  4. For issues: supercode tell K \"fix: ...\" — re-monitor until done again"$'\n'
+  prompt+="  5. When clean: tell the user \"All agents done. Run 'supercode save --dry-run' to preview.\""$'\n\n'
   prompt+="Begin."
 
   printf '%s' "$prompt"

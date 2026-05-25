@@ -149,13 +149,14 @@ cmd_dispatch() {
     session_update_agent "$((i+1))" "role" "${roles[$i]}"
   done
 
-  # Set initial status signals
+  # Set initial status signals (keyed by role_agentN for uniqueness)
   for ((i=0; i<n; i++)); do
+    local agent_n=$((i+1))
     local dep_str="${deps[$i]}"
     if [[ -n "$dep_str" ]]; then
-      signal_write "${roles[$i]}" "waiting" "waiting on: $dep_str"
+      signal_write "${roles[$i]}" "waiting" "waiting on: $dep_str" "$agent_n"
     else
-      signal_write "${roles[$i]}" "working" ""
+      signal_write "${roles[$i]}" "working" "" "$agent_n"
     fi
   done
 
@@ -207,7 +208,7 @@ cmd_dispatch() {
     ownership=$(ownership_get "$role" 2>/dev/null || echo "")
     local agent_deps="${deps[$i]}"
     local role_prompt
-    role_prompt=$(_build_role_prompt "$role" "$task" "$all_roles_str" "$ownership" "$agent_deps")
+    role_prompt=$(_build_role_prompt "$role" "$task" "$all_roles_str" "$ownership" "$agent_deps" "$agent_n")
     (
       sleep "$BOOT_DELAY"
       _send_multiline_to_pane "$pid" "$role_prompt"

@@ -24,54 +24,51 @@ _create_brain_pane() {
   printf '%s' "$brain_id"
 }
 
-_build_dispatch_prompt() {
-  local n=$1 task_count=$2
-  shift 2
-  local tasks=("$@")
-  local prompt
-  prompt="You are the Brain -- orchestrator of this supercode session. The user wants $n parallel Claude agents to work together on a shared project. Your job RIGHT NOW is to dispatch a coordinated task to each agent so they understand each other and don't conflict."$'\n\n'
-  prompt+="STEPS:"$'\n'
-  prompt+="1. Read the tasks below carefully. Identify the shared project (these are almost certainly parts of one system -- figure out which one)."$'\n'
-  prompt+="2. In 1-2 sentences, summarize the overall project and the shared elements: module structure, file paths, naming conventions, data types/interfaces that more than one agent will touch."$'\n'
-  prompt+="3. For each agent K (1..$n), compose a coordinated task message and dispatch it with:"$'\n'
-  prompt+="     supercode tell K \"composed message\""$'\n'
-  prompt+="   Each composed message should include: (a) the agent's specific work, (b) one sentence of project context, (c) brief note on what OTHER agents are building (so this agent doesn't duplicate or conflict), (d) any shared conventions/interfaces to follow."$'\n'
-  if (( task_count < n )); then
-    prompt+="   The user gave only $task_count tasks but you have $n agents -- assign useful complementary work (tests, docs, code review, etc.) to the spare agents."$'\n'
-  elif (( task_count > n )); then
-    prompt+="   The user gave $task_count tasks but you have only $n agents -- combine related tasks where it makes sense."$'\n'
-  fi
-  prompt+="4. After all $n agents are dispatched, say \"all $n agents launched\" and wait for the user's next message. From then on you coordinate -- use 'supercode peek all' to check progress, 'supercode tell K ...' to follow up, 'supercode broadcast ...' to notify everyone."$'\n\n'
-  prompt+="AGENTS: 1..$n  (worktrees at $WORKTREE_BASE/agent-K)"$'\n\n'
-  prompt+="TASKS THE USER GAVE:"$'\n'
-  local k=1
-  for t in "${tasks[@]}"; do
-    prompt+="  $k. $t"$'\n'
-    ((k++))
-  done
-  prompt+=$'\n'"Begin."
-  printf '%s' "$prompt"
-}
-
-_build_idle_prompt() {
-  local n=$1
-  local prompt
-  prompt="You are the Brain -- orchestrator of this supercode session. There are $n parallel Claude agents (agent-1 .. agent-$n) booted in worktrees at $WORKTREE_BASE/agent-K, sitting idle and waiting for instructions."$'\n\n'
-  prompt+="The user hasn't told you what to build yet. Your job:"$'\n'
-  prompt+="1. Greet them in one short sentence and ask what they want to build (a project, a feature, a change to an existing codebase, etc.). Stay concise -- one or two questions."$'\n'
-  prompt+="2. Once you understand the goal, design how to split the work across up to $n agents. Identify shared elements (modules, file paths, conventions, data types) that more than one agent will touch."$'\n'
-  prompt+="3. Dispatch a coordinated task to each agent with:"$'\n'
-  prompt+="     supercode tell K \"composed message\""$'\n'
-  prompt+="   Each message should include: (a) the agent's specific work, (b) one sentence of project context, (c) brief note on what OTHER agents are doing, (d) shared conventions/interfaces to follow."$'\n'
-  prompt+="4. After dispatching, stay interactive. Use 'supercode peek all' to check progress, 'supercode tell K ...' for follow-ups, 'supercode broadcast ...' for everyone."$'\n\n'
-  prompt+="You coordinate; you do not write code yourself. Begin by greeting the user and asking what they want to build."
-  printf '%s' "$prompt"
-}
-
 _build_posthoc_prompt() {
   local agent_count=$1
   local prompt
-  prompt="You are the Brain for this supercode session -- orchestrator of $agent_count parallel Claude agents (agent-1 .. agent-$agent_count) working in worktrees at $WORKTREE_BASE/agent-K. Use these shell helpers: 'supercode peek <N>' to read agent N's screen, 'supercode peek all' for a snapshot of every agent (titles + git status + recent screen), 'supercode tell <N> \"msg\"' to send a message to one agent's Claude prompt, 'supercode broadcast \"msg\"' to send to all. You coordinate; you do not write code yourself. When the user asks how things are going, run 'supercode peek all' first. Reply 'ready' when oriented."
+  prompt="You are the Brain for this supercode session -- orchestrator of $agent_count parallel Claude agents (agent-1 .. agent-$agent_count) working in worktrees at $WORKTREE_BASE/agent-K."$'\n\n'
+
+  prompt+="TOOLS:"$'\n'
+  prompt+="  supercode signals              — show all agents' status (working/blocked/done) with timestamps"$'\n'
+  prompt+="  supercode peek <N>             — read agent N's screen"$'\n'
+  prompt+="  supercode peek <N> --history 200 — read agent N's extended history (for diagnosing stuck agents)"$'\n'
+  prompt+="  supercode peek all             — snapshot of every agent (titles + git status + recent screen)"$'\n'
+  prompt+="  supercode tell <N> \"msg\"       — send a message to one agent's Claude prompt"$'\n'
+  prompt+="  supercode broadcast \"msg\"      — send to all agents"$'\n'
+  prompt+="  supercode diff <N|all>         — show files changed by each agent"$'\n'
+  prompt+="  supercode verify               — run build/test/lint in each worktree"$'\n'
+  prompt+="  supercode conflicts            — detect file conflicts and ownership violations"$'\n'
+  prompt+="  supercode approve <N|role>     — approve an agent's approach"$'\n'
+  prompt+="  supercode reject <N|role> \"r\" — reject and redirect an agent"$'\n\n'
+
+  prompt+="STATUS SIGNALS:"$'\n'
+  prompt+="Each agent writes its status to shared/status/ROLE_N.json (e.g. backend_1.json, frontend_2.json)."$'\n'
+  prompt+="Multiple agents with the same role get separate files. Use 'supercode signals' to see all at once."$'\n\n'
+
+  prompt+="YOUR JOB — start monitoring immediately:"$'\n\n'
+
+  prompt+="MONITORING LOOP (repeat every 60-90 seconds):"$'\n'
+  prompt+="  1. Run: supercode signals"$'\n'
+  prompt+="  2. If any agent is BLOCKED or stale (no update in >3 min): supercode peek N --history 200"$'\n'
+  prompt+="  3. Diagnose and help: supercode tell N \"...\""$'\n'
+  prompt+="  4. If an agent needs output from another: check shared/contracts/ and shared/outputs/, relay it"$'\n'
+  prompt+="  5. If an agent is in an error loop: give them a different approach"$'\n'
+  prompt+="  6. If an agent never wrote a status file: peek and nudge them"$'\n'
+  prompt+="  DO NOT passively wait. Agents cannot message you — YOU must check on THEM."$'\n\n'
+
+  prompt+="REVIEW-FIX CYCLE (when all agents report done):"$'\n'
+  prompt+="  1. Run: supercode diff all — review all changes"$'\n'
+  prompt+="  2. Run: supercode verify — check build/test/lint passes"$'\n'
+  prompt+="  3. Run: supercode conflicts — check for file ownership violations"$'\n'
+  prompt+="  4. If .supercode/CONTRACTS.md exists, verify agents followed it (matching types, API shapes, no mismatches)"$'\n'
+  prompt+="  5. For issues: supercode tell K \"fix: ...\" — then re-monitor until they're done again"$'\n'
+  prompt+="  6. When clean: tell the user \"All agents done. Run 'supercode save --dry-run' to preview the merge.\""$'\n\n'
+
+  prompt+="FORBIDDEN: supercode save, supercode unsave, supercode rollback — only the USER merges or reverts work."$'\n'
+  prompt+="SAFE TO USE: tell, broadcast, peek, diff, signals, verify, approve, reject, conflicts, label, clean, kill."$'\n\n'
+
+  prompt+="Begin by running 'supercode signals' to orient yourself, then enter the monitoring loop."
   printf '%s' "$prompt"
 }
 
@@ -111,7 +108,8 @@ _build_interactive_brain_prompt() {
   prompt+="  accessibility — WCAG, ARIA, keyboard nav, screen readers"$'\n'
   prompt+="  mapper       — codebase mapping, dependency analysis"$'\n'
   prompt+="  compatibility — backward compat, migration paths"$'\n'
-  prompt+="  reverser     — reverse engineering with Ghidra/GhidraMCP + x64dbg/gdb"$'\n\n'
+  prompt+="  reverser     — reverse engineering with Ghidra/GhidraMCP + x64dbg/gdb"$'\n'
+  prompt+="  selfmod      — modify supercode itself (knows all supercode internals)"$'\n\n'
 
   prompt+="PRESET SHORTCUTS (for reference):"$'\n'
   prompt+="  webapp     = architect, backend, frontend, database, qa"$'\n'
@@ -126,11 +124,20 @@ _build_interactive_brain_prompt() {
 
   prompt+="YOUR WORKFLOW:"$'\n'
   if (( ${#tasks[@]} > 0 )); then
-    prompt+="1. Analyze the user's request above. Ask clarifying questions if needed (keep it brief — 1-2 questions max)."$'\n'
+    prompt+="1. Analyze the user's request above. Before doing ANYTHING else, check if you fully understand it."$'\n'
+    prompt+="   If ANY of these are true, you MUST ask the user to clarify BEFORE planning or dispatching:"$'\n'
+    prompt+="   - The request is vague or could mean multiple things"$'\n'
+    prompt+="   - You're unsure which files, features, or areas of the codebase are involved"$'\n'
+    prompt+="   - The scope is unclear (how much should change? what's in vs out of scope?)"$'\n'
+    prompt+="   - There are technical decisions the user should make (library choice, approach, architecture)"$'\n'
+    prompt+="   - The request mentions things that don't exist yet and you need to know the desired behavior"$'\n'
+    prompt+="   - You'd be guessing about what the user actually wants"$'\n'
+    prompt+="   Ask 1-3 short, specific questions. Wait for the user's answer before continuing to step 2."$'\n'
+    prompt+="   Do NOT assume, do NOT guess, do NOT proceed with a plan you're not confident about."$'\n'
   else
     prompt+="1. Greet the user in one sentence. Ask what they want to build. Keep it brief."$'\n'
   fi
-  prompt+="2. Once you understand the task, decide:"$'\n'
+  prompt+="2. Once you FULLY understand the task (after asking questions if needed), decide:"$'\n'
   prompt+="   - Which roles to assign (max 5 agents)"$'\n'
   prompt+="   - What each agent's specific task will be"$'\n'
   prompt+="   - File ownership for each role"$'\n'
@@ -150,36 +157,61 @@ _build_interactive_brain_prompt() {
   prompt+="   This will create worktrees and spawn agent panes in this tmux session automatically."$'\n'
   prompt+="   Each agent gets a shared/ directory where they can read/write files visible to all agents."$'\n\n'
 
-  prompt+="7. After dispatch completes, enter AUTO-MONITORING MODE. Repeat this loop:"$'\n'
-  prompt+="   a) Check agent status signals:  cat shared/status/*.json 2>/dev/null"$'\n'
-  prompt+="      (agents write status: working, blocked, done)"$'\n'
-  prompt+="   b) If any agent is BLOCKED, read their status message and help them:"$'\n'
-  prompt+="      - If they need output from another agent, check shared/outputs/ and relay it"$'\n'
-  prompt+="      - If they're stuck on a problem, send guidance: supercode tell K \"...\""$'\n'
-  prompt+="   c) If an agent hasn't updated status in a while, peek at them: supercode peek K"$'\n'
-  prompt+="   d) When ALL agents report status=done, move to REVIEW PHASE."$'\n\n'
+  prompt+="7. After dispatch completes, enter AUTO-MONITORING MODE. This is your PRIMARY JOB — proactively detect and fix problems."$'\n\n'
+  prompt+="   MONITORING LOOP (repeat every 60-90 seconds):"$'\n'
+  prompt+="   a) Run: supercode signals"$'\n'
+  prompt+="      This shows every agent's status (working/blocked/done), their message, and timing."$'\n\n'
+
+  prompt+="   STUCK AGENT DETECTION — check for these patterns:"$'\n'
+  prompt+="   - BLOCKED status: agent explicitly says they need something. Read their message, find what they need, and deliver it."$'\n'
+  prompt+="   - STALE timestamp: agent hasn't updated status in >3 minutes. Run 'supercode peek N' to see their screen."$'\n'
+  prompt+="     Common causes: waiting for user permission prompt, hit an error loop, confused about task, waiting for dependency."$'\n'
+  prompt+="   - NO SIGNAL: agent never wrote a status file. They may not have started. Peek at them and nudge if needed."$'\n'
+  prompt+="   - REPEATED ERRORS: if peek shows the same error repeating, intervene with a different approach."$'\n\n'
+
+  prompt+="   HOW TO HELP A STUCK AGENT:"$'\n'
+  prompt+="   1. First diagnose: supercode peek N --history 200  (see their full recent output)"$'\n'
+  prompt+="   2. If they need info from another agent: check shared/contracts/ and shared/outputs/, then relay it:"$'\n'
+  prompt+="      supercode tell N \"The backend agent published the API schema at shared/contracts/api.json — use that.\""$'\n'
+  prompt+="   3. If they're confused about their task: restate it clearly:"$'\n'
+  prompt+="      supercode tell N \"To clarify: your job is to [specific task]. Focus on [specific files]. Ignore [distraction].\""$'\n'
+  prompt+="   4. If they're in an error loop: give them the fix:"$'\n'
+  prompt+="      supercode tell N \"You're hitting [error] because [cause]. Fix it by [solution].\""$'\n'
+  prompt+="   5. If they're done but forgot to signal: remind them:"$'\n'
+  prompt+="      supercode tell N \"Your work looks complete. Update your status: echo '{...status:done...}' > shared/status/ROLE_N.json\""$'\n'
+  prompt+="      Status files are named ROLE_N.json (e.g. backend_1.json, backend_2.json) — each agent has its own file."$'\n\n'
+
+  prompt+="   DO NOT just passively wait. Check proactively. The agents cannot message you — YOU must check on THEM."$'\n'
+  prompt+="   b) When ALL agents report status=done, move to REVIEW PHASE."$'\n\n'
 
   prompt+="8. REVIEW-FIX CYCLE (when all agents are done):"$'\n'
   prompt+="   a) Review all diffs:  supercode diff all"$'\n'
-  prompt+="   b) Read each agent's key changes and compare against .supercode/SPEC.md"$'\n'
-  prompt+="   c) CONTRACT VERIFICATION — check that:"$'\n'
+  prompt+="   b) Run build/test/lint: supercode verify"$'\n'
+  prompt+="   c) Check ownership: supercode conflicts"$'\n'
+  prompt+="   d) Read each agent's key changes and compare against .supercode/SPEC.md"$'\n'
+  prompt+="   e) CONTRACT VERIFICATION — check that:"$'\n'
   prompt+="      - All API endpoints in CONTRACTS.md are actually implemented"$'\n'
   prompt+="      - Shared types/interfaces match across agents (no mismatched field names or shapes)"$'\n'
-  prompt+="      - File ownership was respected (no agent modified files outside its ownership)"$'\n'
-  prompt+="   d) For each issue found, send a targeted fix request: supercode tell K \"fix: ...\""$'\n'
+  prompt+="   f) For each issue found, send a targeted fix request: supercode tell K \"fix: ...\""$'\n'
   prompt+="      After sending fixes, agents will update status back to 'working' then 'done'"$'\n'
-  prompt+="   e) Re-check until all diffs are clean. Then tell the user: \"All agents done. Review complete. Run 'supercode save --dry-run' to preview the merge.\""$'\n\n'
+  prompt+="   g) Re-check until all diffs are clean. Then tell the user: \"All agents done. Review complete. Run 'supercode save --dry-run' to preview the merge.\""$'\n\n'
 
   prompt+="RULES:"$'\n'
-  prompt+="- Maximum 5 agents. Pick only the roles that are actually needed."$'\n'
+  prompt+="- NEVER run: supercode save, supercode unsave, supercode rollback. These merge or revert work — only the USER decides when."$'\n'
+  prompt+="- You CAN run: supercode clean, supercode kill — these only kill agent panes (brain stays alive). Use them to restart stuck agents."$'\n'
+  prompt+="- You CAN run: supercode dispatch, tell, broadcast, peek, diff, signals, verify, approve, reject, conflicts, label."$'\n'
+  prompt+="- NEVER guess. If the task is unclear, ask the user before planning. A bad plan is worse than a short delay."$'\n'
+  prompt+="- Prefer 3-5 agents. Use more only if the task clearly benefits from it. Pick only roles that are actually needed."$'\n'
+  prompt+="- You CAN assign the same role to multiple agents (e.g. two backend agents) — each gets its own unique status file (backend_1.json, backend_2.json)."$'\n'
   prompt+="- Do NOT write implementation code. Only planning documents."$'\n'
   prompt+="- Be specific about file paths, function names, and data shapes in contracts."$'\n'
   prompt+="- Inspect the codebase before planning — understand the existing structure."$'\n'
   prompt+="- You MUST run 'supercode dispatch' yourself after creating plan.json. Do not ask the user to do it."$'\n'
   prompt+="- During monitoring, check status signals regularly — don't wait for the user to ask."$'\n'
+  prompt+="- If an agent asks YOU a question (visible via peek), answer it with 'supercode tell N \"...\"' — don't ignore it."$'\n'
 
   if (( ${#tasks[@]} > 0 )); then
-    prompt+=$'\n'"The user has already described what they want. Start analyzing and planning."
+    prompt+=$'\n'"The user has described what they want above. Read it carefully. If you understand it fully, start planning. If ANYTHING is unclear or ambiguous, ask the user first — do NOT guess. A wrong plan wastes everyone's time."
   else
     prompt+=$'\n'"Begin by greeting the user."
   fi
