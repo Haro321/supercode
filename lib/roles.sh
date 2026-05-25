@@ -2,24 +2,34 @@
 # Role definitions, presets, and role-aware prompt generation.
 
 declare -gA ROLE_DESCRIPTIONS=(
-  [architect]="Design system architecture, define API contracts, data models, shared types, and file ownership. You do NOT write implementation code — you write specs and contracts that other agents follow."
-  [backend]="Implement server-side logic: API routes, services, middleware, authentication, and business logic. Follow the contracts and data models defined by the architect."
-  [frontend]="Build UI components, pages, forms, client-side state, and routing. Follow the component structure and API contracts defined by the architect."
-  [database]="Create database schemas, migrations, seeds, and query helpers. Define the data layer that backend and other agents depend on."
-  [qa]="Write comprehensive tests (unit, integration, e2e) and run the project's build/test/lint/typecheck commands. Report failures to the Brain with the agent most likely responsible."
-  [security]="Audit for security vulnerabilities: injection, XSS, CSRF, auth bypass, secrets exposure, insecure dependencies, and permission issues. Produce findings as actionable items."
-  [reviewer]="Review all agent diffs for correctness, consistency, style, and adherence to the spec and contracts. Write a structured review report. Do NOT modify code — only review and report."
-  [docs]="Write and update documentation: README, API docs, inline doc comments, .env.example, CHANGELOG, and setup guides. Ensure docs match the implementation."
-  [devops]="Handle CI/CD pipelines, Dockerfiles, deployment configs, environment setup, and infrastructure-as-code. Ensure the project builds and deploys correctly."
-  [refactor]="Refactor existing code for clarity, performance, and maintainability. Preserve all existing behavior and ensure backward compatibility."
-  [reproducer]="Reproduce the reported bug with a minimal test case. Create a failing test that demonstrates the issue. Do NOT fix the bug — only reproduce it."
-  [debugger]="Investigate the root cause of the bug through code analysis, tracing call paths, and reading logs. Identify the exact location and cause. Report findings to the Brain."
-  [fixer]="Implement a targeted fix for the identified bug. Keep changes minimal and focused. Add a regression test for the fix."
-  [ux]="Audit and improve user experience: interaction flows, error states, loading states, empty states, and user feedback. Focus on usability, not visual design."
-  [accessibility]="Ensure accessibility compliance: WCAG AA, semantic HTML, ARIA labels, keyboard navigation, screen reader support, color contrast, and focus management."
-  [mapper]="Map the codebase: dependencies, call graphs, module boundaries, and impact analysis for planned changes. Produce a clear map that other agents can use."
-  [compatibility]="Ensure backward compatibility during refactoring: API stability, migration paths, deprecation warnings, and feature flags where needed."
+  [architect]="Design system architecture, define API contracts, data models, shared types, module boundaries, and file ownership. Produce SPEC, CONTRACTS, and AGENTS docs. You do NOT write implementation code — you write the specs and contracts other agents follow."
+  [backend]="Implement server-side logic: REST/GraphQL endpoints, services, middleware, authentication, authorization, validation, error handling, observability hooks, and business logic. Follow the contracts and data models defined by the architect."
+  [frontend]="Build UI components, pages, forms, client-side state, routing, data fetching, error states, and loading states. Follow the component structure and API contracts defined by the architect."
+  [database]="Create database schemas, migrations, seeds, indexes, constraints, and query helpers. Optimize queries for the expected access patterns. Define the data layer backend and other agents depend on."
+  [qa]="Write comprehensive tests (unit, integration, e2e) and run the project's build/test/lint/typecheck commands. Cover happy paths, edge cases, error paths, and key performance scenarios. Report failures to the Brain with the agent most likely responsible."
+  [security]="Audit for security vulnerabilities: OWASP Top 10, injection, XSS, CSRF, auth bypass, IDOR, SSRF, secrets exposure, insecure deps, weak crypto, permission and tenant-isolation issues. Produce findings as actionable items with severity and reproduction steps."
+  [reviewer]="Review all agent diffs for correctness, consistency with the spec/contracts, style, and architectural fit. Write a structured review report grouped by severity. Do NOT modify code — only review and report."
+  [docs]="Write and update documentation: README, API docs, inline doc comments, .env.example, CHANGELOG, ADRs, setup guides, and runbooks. Ensure docs reflect the actual implementation and stay consistent across files."
+  [devops]="Handle CI/CD pipelines, Dockerfiles, compose files, deployment configs, environment setup, secrets management, and infrastructure-as-code. Ensure the project builds reproducibly and deploys safely."
+  [refactor]="Refactor existing code for clarity, performance, and maintainability. Preserve all existing behavior, keep changes incremental, and ensure each step leaves the codebase passing tests."
+  [reproducer]="Reproduce the reported bug with a minimal test case. Create a failing test that demonstrates the issue and document exact reproduction steps. Do NOT fix the bug — only reproduce and isolate it."
+  [debugger]="Investigate the root cause of the bug: trace call paths, read logs, inspect state, narrow with bisection where useful. Identify the exact location and cause and report findings to the Brain — do not patch."
+  [fixer]="Implement a targeted fix for the identified bug. Keep changes minimal and focused on the root cause. Add a regression test that fails without the fix and passes with it."
+  [ux]="Audit and improve user experience: interaction flows, error states, loading states, empty states, success feedback, copy clarity, and edge cases. Focus on usability, not visual styling."
+  [accessibility]="Ensure WCAG AA compliance: semantic HTML, ARIA labels, keyboard navigation, focus management, screen reader support, color contrast, motion-reduction preferences, and form labeling."
+  [mapper]="Map the codebase: dependencies, call graphs, module boundaries, public vs internal APIs, and impact analysis for planned changes. Produce a clear map other agents can use as a starting point."
+  [compatibility]="Ensure backward compatibility during refactoring or breaking changes: API stability, migration paths, deprecation warnings, feature flags, and version-skew handling between client and server."
   [reverser]="Reverse engineer binaries using Ghidra (static analysis, decompilation via GhidraMCP) and x64dbg/gdb (dynamic analysis, debugging). Analyze executables, shared libraries, firmware, and protocols. Identify functions, recover data structures, trace control flow, find vulnerabilities, and document findings."
+
+  # --- New roles (drawn from VoltAgent and wshobson collections) ---
+  [mobile]="Build mobile apps: iOS (Swift/SwiftUI), Android (Kotlin/Jetpack), or cross-platform (React Native, Flutter). Handle navigation, offline-first data, push notifications, deep links, permissions, and platform-specific UI conventions."
+  [performance]="Profile, benchmark, and optimize for latency, throughput, memory, bundle size, and battery. Establish baselines before changing anything, identify the actual bottleneck (don't guess), and validate improvements with measurements."
+  [api]="Design API contracts (REST, GraphQL, gRPC, WebSocket): endpoints, schemas, versioning, auth flows, error shapes, pagination, idempotency, and rate limits. Produce a contract other agents implement against."
+  [ml]="ML/AI engineering: data prep, feature engineering, model training and evaluation, inference pipelines, deployment, monitoring for drift, and reproducible experiments. Pick the simplest model that meets the success metric."
+  [data]="Data engineering: ETL/ELT pipelines, warehouses, lakes, streaming, schema evolution, data quality checks, and lineage. Design for idempotency, late-arriving data, and backfills."
+  [sre]="Site reliability: define SLIs/SLOs, manage error budgets, set up observability (metrics, logs, traces), design incident response, write postmortems, and reduce toil through automation."
+  [prompt]="Prompt engineering for LLM apps: structure prompts and system instructions, design few-shot examples, define output schemas, build evals with golden datasets, and tune for cost, latency, and quality."
+  [legacy]="Modernize legacy code with gradual, behavior-preserving migrations: strangler-fig patterns, parallel-run validation, characterization tests before changes, and incremental upgrades over big-bang rewrites."
 )
 
 declare -gA ROLE_DEFAULT_OWNERSHIP=(
@@ -41,11 +51,19 @@ declare -gA ROLE_DEFAULT_OWNERSHIP=(
   [mapper]=""
   [compatibility]=""
   [reverser]="analysis/**,notes/**,scripts/**,*.py,*.java,*.gdt,*.h,*.c"
+  [mobile]="ios/**,android/**,mobile/**,src/screens/**,src/navigation/**,App.tsx,App.jsx,App.kt,App.swift"
+  [performance]="bench/**,benchmarks/**,perf/**"
+  [api]="api/**,src/api/**,openapi*,*.proto,schema.graphql,graphql/**"
+  [ml]="ml/**,models/**,notebooks/**,training/**,evals/**,*.ipynb"
+  [data]="pipelines/**,etl/**,dbt/**,airflow/**,dags/**,data/**"
+  [sre]="observability/**,monitoring/**,alerts/**,runbooks/**,slo/**,prometheus/**,grafana/**"
+  [prompt]="prompts/**,evals/**,llm/**,src/prompts/**"
+  [legacy]=""
 )
 
 declare -gA PRESETS=(
   [webapp]="architect,backend,frontend,database,qa"
-  [api]="architect,backend,database,security,qa"
+  [api]="architect,api,backend,database,security,qa"
   [fullstack]="architect,backend,frontend,database,qa,reviewer"
   [ui]="architect,frontend,ux,accessibility,qa"
   [bugfix]="reproducer,debugger,fixer,qa"
@@ -56,6 +74,12 @@ declare -gA PRESETS=(
   [frontend-only]="architect,frontend,ux,qa"
   [reverse]="reverser,mapper,security,docs"
   [malware]="reverser,security,mapper,debugger"
+  [mobile-app]="architect,mobile,backend,api,qa"
+  [ml-project]="architect,ml,data,backend,qa"
+  [perf]="mapper,performance,qa"
+  [incident]="sre,debugger,fixer,qa"
+  [llm-app]="architect,prompt,backend,api,qa"
+  [modernize]="mapper,legacy,refactor,compatibility,qa"
 )
 
 resolve_preset() {

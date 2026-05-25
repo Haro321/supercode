@@ -90,12 +90,19 @@ supercode --roles backend,frontend,security "add API keys feature"
 | Preset | Roles |
 |--------|-------|
 | `webapp` | architect, backend, frontend, database, qa |
-| `api` | architect, backend, database, security, qa |
+| `api` | architect, api, backend, database, security, qa |
 | `fullstack` | architect, backend, frontend, database, qa, reviewer |
 | `ui` | architect, frontend, ux, accessibility, qa |
+| `mobile-app` | architect, mobile, backend, api, qa |
+| `ml-project` | architect, ml, data, backend, qa |
+| `llm-app` | architect, prompt, backend, api, qa |
 | `bugfix` | reproducer, debugger, fixer, qa |
 | `refactor` | mapper, refactor, compatibility, qa |
+| `modernize` | mapper, legacy, refactor, compatibility, qa |
+| `perf` | mapper, performance, qa |
+| `incident` | sre, debugger, fixer, qa |
 | `security` | architect, security, backend, qa |
+| `reverse` | reverser, mapper, security, docs |
 
 Run `supercode presets` or `supercode roles` to see all options.
 
@@ -104,16 +111,31 @@ Run `supercode presets` or `supercode roles` to see all options.
 | Role | Responsibility |
 |------|---------------|
 | `architect` | System design, API contracts, data models, file ownership |
-| `backend` | Server logic, API routes, services, middleware |
-| `frontend` | UI components, pages, forms, client-side logic |
-| `database` | Schemas, migrations, seeds, queries |
-| `qa` | Tests, build/lint/typecheck verification |
-| `security` | Vulnerability auditing, auth, secrets |
-| `reviewer` | Code review, spec compliance, quality |
-| `docs` | Documentation, README, API docs |
-| `reproducer` | Bug reproduction with minimal test cases |
-| `debugger` | Root cause investigation |
-| `fixer` | Targeted bug fixes |
+| `api` | API contract design (REST, GraphQL, gRPC): schemas, versioning, auth, pagination |
+| `backend` | Server logic, endpoints, services, middleware, business rules |
+| `frontend` | UI components, pages, forms, client-side state, routing |
+| `mobile` | iOS, Android, React Native, Flutter — offline, push, deep links |
+| `database` | Schemas, migrations, seeds, indexes, queries |
+| `data` | ETL/ELT pipelines, warehouses, streaming, schema evolution |
+| `ml` | Model training, inference, evals, deployment, drift monitoring |
+| `prompt` | Prompt design, evals, output schemas, cost/latency tuning for LLM apps |
+| `qa` | Tests (unit, integration, e2e), build/lint/typecheck verification |
+| `performance` | Profiling, benchmarks, latency/memory/bundle/battery optimization |
+| `security` | Vulnerability audits: injection, auth bypass, secrets, supply chain |
+| `reviewer` | Code review against spec, contracts, and architecture fit |
+| `sre` | SLIs/SLOs, error budgets, observability, incident response, runbooks |
+| `devops` | CI/CD, Dockerfiles, deployment configs, infra-as-code |
+| `ux` | Interaction flows, error/loading/empty states, user feedback |
+| `accessibility` | WCAG AA, ARIA, keyboard nav, focus management, contrast |
+| `docs` | README, API docs, runbooks, ADRs, CHANGELOG |
+| `mapper` | Codebase mapping: deps, call graphs, module boundaries, impact analysis |
+| `refactor` | Behavior-preserving structural improvements |
+| `legacy` | Modernize legacy code with gradual, parallel-run migrations |
+| `compatibility` | Backward compatibility: API stability, migration paths, version skew |
+| `reproducer` | Minimal failing reproduction for a reported bug |
+| `debugger` | Root cause investigation (no patching) |
+| `fixer` | Targeted fix + regression test |
+| `reverser` | Binary reverse engineering with Ghidra and gdb/x64dbg |
 
 ## Default workflow
 
