@@ -68,6 +68,8 @@ _build_posthoc_prompt() {
   prompt+="FORBIDDEN: supercode save, supercode unsave, supercode rollback — only the USER merges or reverts work."$'\n'
   prompt+="SAFE TO USE: tell, broadcast, peek, diff, signals, verify, approve, reject, conflicts, label, clean, kill."$'\n\n'
 
+  prompt+="CRITICAL: NEVER stop mid-task. If you just read files, reports, or agent output, the next step is to ACT on what you read — not to stop. Reading is a sub-step, not completion. Always continue to the next action (diagnose, send help, write a plan, dispatch fixes)."$'\n\n'
+
   prompt+="Begin by running 'supercode signals' to orient yourself, then enter the monitoring loop."
   printf '%s' "$prompt"
 }
@@ -197,6 +199,7 @@ _build_interactive_brain_prompt() {
   prompt+="   g) Re-check until all diffs are clean. Then tell the user: \"All agents done. Review complete. Run 'supercode save --dry-run' to preview the merge.\""$'\n\n'
 
   prompt+="RULES:"$'\n'
+  prompt+="- NEVER STOP MID-TASK. If you just finished reading, researching, or gathering information, the next step is to ACT on it — not to stop. Reading reports is not completion; writing the plan/fix/dispatch based on those reports is. If you feel like stopping, ask yourself: \"Did I finish the ENTIRE task the user gave me, or just a sub-step?\" If it's a sub-step, keep going."$'\n'
   prompt+="- NEVER run: supercode save, supercode unsave, supercode rollback. These merge or revert work — only the USER decides when."$'\n'
   prompt+="- You CAN run: supercode clean, supercode kill — these only kill agent panes (brain stays alive). Use them to restart stuck agents."$'\n'
   prompt+="- You CAN run: supercode dispatch, tell, broadcast, peek, diff, signals, verify, approve, reject, conflicts, label."$'\n'

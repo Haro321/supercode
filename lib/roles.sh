@@ -363,6 +363,7 @@ _build_role_dispatch_prompt() {
   prompt+="  3. supercode conflicts — check ownership violations"$'\n'
   prompt+="  4. For issues: supercode tell K \"fix: ...\" — re-monitor until done again"$'\n'
   prompt+="  5. When clean: tell the user \"All agents done. Run 'supercode save --dry-run' to preview.\""$'\n\n'
+  prompt+="CRITICAL: NEVER stop mid-task. If you just read files, reports, or agent output, the next step is to ACT on what you read — not to stop. Reading is a sub-step, not completion. Always continue to the next action (dispatch agents, diagnose issues, send help, write fixes)."$'\n\n'
   prompt+="Begin."
 
   printf '%s' "$prompt"
