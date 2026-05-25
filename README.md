@@ -108,14 +108,14 @@ Run `supercode presets` or `supercode roles` to see all options.
 
 ### Role skills
 
-Each role has an optional skill file at `agents/<role>.md` with concrete
-patterns, checklists, and examples that the role's agent reads at dispatch
-time. Current skill files are mirrored from
-[`affaan-m/ecc`](https://github.com/affaan-m/ecc) (MIT) and cover: `api`,
-`backend`, `frontend`, `qa`, `security`, `reviewer`, `debugger`, `mapper`,
-`docs`, `ml`, `prompt`. Roles without a skill file fall back to their
-short bash description. See [`agents/README.md`](agents/README.md) for how
-to add more.
+Each role can have an optional skill file at `agents/<role>.md` with
+concrete patterns, checklists, and examples that the role's agent reads
+at dispatch time. Current skill files are mirrored from
+[`affaan-m/ecc`](https://github.com/affaan-m/ecc) (MIT) and cover:
+`api`, `backend`, `frontend`, `qa`, `security`, `ml`, plus narrower fits
+for `reviewer` and `prompt`. The other roles fall back to their short
+bash description in `lib/roles.sh`. See [`agents/README.md`](agents/README.md)
+for the full mapping and notes on fit, and for how to add more.
 
 ### Available roles
 

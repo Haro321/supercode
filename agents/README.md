@@ -21,21 +21,26 @@ silently to the bash description.
 
 All current files are mirrored from
 [`affaan-m/ecc`](https://github.com/affaan-m/ecc) (MIT-licensed) and renamed
-to match supercode's role names:
+to match supercode's role names. Each row notes how closely the upstream
+skill matches the role; weak fits are kept because they're still useful but
+narrower than the role itself.
 
-| supercode role | source skill (ecc) |
-|---|---|
-| `api` | `api-design` |
-| `backend` | `backend-patterns` |
-| `frontend` | `frontend-patterns` |
-| `qa` | `tdd-workflow` |
-| `security` | `security-review` |
-| `reviewer` | `verification-loop` |
-| `debugger` | `agent-introspection-debugging` |
-| `mapper` | `deep-research` |
-| `docs` | `documentation-lookup` |
-| `ml` | `mle-workflow` |
-| `prompt` | `eval-harness` |
+| supercode role | source skill (ecc) | fit |
+|---|---|---|
+| `api` | `api-design` | strong |
+| `backend` | `backend-patterns` | strong |
+| `frontend` | `frontend-patterns` | strong |
+| `qa` | `tdd-workflow` | strong |
+| `security` | `security-review` | strong |
+| `ml` | `mle-workflow` | strong |
+| `reviewer` | `verification-loop` | weak — covers self-verification before PR, not reviewing other agents' diffs |
+| `prompt` | `eval-harness` | weak — covers evals only, not prompt design as a whole |
+
+Roles without a skill file here (architect, database, devops, refactor,
+mobile, performance, data, sre, debugger, mapper, docs, ux, accessibility,
+compatibility, reproducer, fixer, legacy, reverser) fall back to their
+bash description in `lib/roles.sh`. `reverser` additionally has an inline
+Ghidra/gdb prompt block in `lib/roles.sh`.
 
 ## Adding more
 
