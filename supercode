@@ -29,17 +29,19 @@ else
   exit 1
 fi
 
-# Per-role skill files (optional — falls back to bash description if absent)
-if [[ -n "${SUPERCODE_AGENTS:-}" && -d "$SUPERCODE_AGENTS" ]]; then
+# Per-role skill files (optional — falls back to bash description if absent).
+# Variable is SUPERCODE_SKILLS so it does not collide with SUPERCODE_AGENTS,
+# which is the default worker count set earlier.
+if [[ -n "${SUPERCODE_SKILLS:-}" && -d "$SUPERCODE_SKILLS" ]]; then
   : # user override
 elif [[ -d "$_sc_dir/agents" ]]; then
-  SUPERCODE_AGENTS="$_sc_dir/agents"
+  SUPERCODE_SKILLS="$_sc_dir/agents"
 elif [[ -d "$HOME/.local/share/supercode/agents" ]]; then
-  SUPERCODE_AGENTS="$HOME/.local/share/supercode/agents"
+  SUPERCODE_SKILLS="$HOME/.local/share/supercode/agents"
 else
-  SUPERCODE_AGENTS=""  # no skills available, that's fine
+  SUPERCODE_SKILLS=""  # no skills available, that's fine
 fi
-export SUPERCODE_AGENTS
+export SUPERCODE_SKILLS
 
 # Source core libraries
 source "$SUPERCODE_LIB/ui.sh"

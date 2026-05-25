@@ -36,7 +36,7 @@ The Brain is the first thing that launches. It's your team lead.
 When you run `supercode`, the Brain:
 
 1. **Talks to you** to understand what you want to build
-2. **Picks the right roles** -- up to 5 specialized agents from 17 available roles
+2. **Picks the right roles** -- up to 5 specialized agents from 26 available roles
 3. **Creates contracts** -- shared interfaces, naming conventions, file ownership -- so agents don't conflict
 4. **Writes the plan** -- SPEC.md, CONTRACTS.md, AGENTS.md, and plan.json
 5. **Launches the agents** -- runs `supercode dispatch` itself, agents appear as new panes
@@ -111,11 +111,15 @@ Run `supercode presets` or `supercode roles` to see all options.
 Each role can have an optional skill file at `agents/<role>.md` with
 concrete patterns, checklists, and examples that the role's agent reads
 at dispatch time. Current skill files are mirrored from
-[`affaan-m/ecc`](https://github.com/affaan-m/ecc) (MIT) and cover:
-`api`, `backend`, `frontend`, `qa`, `security`, `ml`, plus narrower fits
-for `reviewer` and `prompt`. The other roles fall back to their short
-bash description in `lib/roles.sh`. See [`agents/README.md`](agents/README.md)
-for the full mapping and notes on fit, and for how to add more.
+[`affaan-m/ecc`](https://github.com/affaan-m/ecc) (MIT, by Affaan
+Mustafa) and cover:
+
+- **strong fit:** `api`, `backend`, `frontend`, `qa` (TDD + E2E), `security`, `ml`, `refactor`
+- **narrow fit:** `reviewer` (self-verification before PR), `prompt` (LLM evals)
+
+Roles without a skill file fall back to their short bash description in
+`lib/roles.sh`. See [`agents/README.md`](agents/README.md) for the
+mapping, fit notes, and how to add more.
 
 ### Available roles
 
@@ -272,6 +276,8 @@ Protected branches (`main`, `master`, `production`) trigger a warning before mer
 |----------|---------|-------------|
 | `SUPERCODE_HOME` | `~/.supercode` | Where worktrees are stored |
 | `SUPERCODE_AGENTS` | `5` | Default worker count (when not using presets/roles) |
+| `SUPERCODE_SKILLS` | (auto) | Path to per-role skill files. Auto-resolves to `<script>/agents/` in a checkout or `~/.local/share/supercode/agents/` when installed |
+| `SUPERCODE_LIB` | (auto) | Override for the `lib/` directory |
 | `SUPERCODE_CLAUDE_ARGS` | *(empty)* | Extra args for `claude` (e.g. `--dangerously-skip-permissions`) |
 | `SUPERCODE_BOOT_DELAY` | `3` | Seconds to wait for claude to boot |
 | `SUPERCODE_SNAPSHOT` | `commit` | Pre-launch handling: `commit`, `stash`, or `none` |
@@ -288,8 +294,9 @@ supercode/
     agents.sh                  # agent labels and accents
     brain.sh                   # brain prompts and pane creation
     session.sh                 # session state tracking
-    roles.sh                   # 17 agent roles, 10 presets
+    roles.sh                   # 26 agent roles, 18 presets
     contracts.sh               # file ownership, project detection, contracts
+    signals.sh                 # status signal helpers
     commands/
       plan.sh                  # plan phase (spec + contracts)
       dispatch.sh              # role-based agent dispatch
@@ -302,6 +309,10 @@ supercode/
       brain_cmd.sh             # brain subcommands
       status.sh                # role-aware status display
       ...                      # tell, broadcast, peek, diff, logs, etc.
+  agents/                      # per-role skill files (markdown, mirrored from ecc)
+    api.md  backend.md  frontend.md  qa.md  security.md  ml.md
+    refactor.md  reviewer.md  prompt.md
+    README.md                  # mapping + fit notes
   tests/                       # bats test suite (32 tests)
   install.sh
 ```

@@ -30,14 +30,15 @@ narrower than the role itself.
 | `api` | `api-design` | strong |
 | `backend` | `backend-patterns` | strong |
 | `frontend` | `frontend-patterns` | strong |
-| `qa` | `tdd-workflow` | strong |
+| `qa` | `tdd-workflow` + `e2e-testing` (concatenated) | strong |
 | `security` | `security-review` | strong |
 | `ml` | `mle-workflow` | strong |
+| `refactor` | `coding-standards` | strong — baseline conventions, naming, readability |
 | `reviewer` | `verification-loop` | weak — covers self-verification before PR, not reviewing other agents' diffs |
 | `prompt` | `eval-harness` | weak — covers evals only, not prompt design as a whole |
 
-Roles without a skill file here (architect, database, devops, refactor,
-mobile, performance, data, sre, debugger, mapper, docs, ux, accessibility,
+Roles without a skill file here (architect, database, devops, mobile,
+performance, data, sre, debugger, mapper, docs, ux, accessibility,
 compatibility, reproducer, fixer, legacy, reverser) fall back to their
 bash description in `lib/roles.sh`. `reverser` additionally has an inline
 Ghidra/gdb prompt block in `lib/roles.sh`.
