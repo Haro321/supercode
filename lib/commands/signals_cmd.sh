@@ -17,7 +17,7 @@ cmd_signals() {
   local total=0 done=0 blocked=0 working=0
   for f in "$status_dir"/*.json; do
     [[ -f "$f" ]] || continue
-    ((total++))
+    ((++total))
     local key role status message timestamp agent_n display_name
     key=$(basename "$f" .json)
     if command -v jq >/dev/null 2>&1; then
@@ -38,9 +38,9 @@ cmd_signals() {
 
     local color="$C_DIM"
     case "$status" in
-      done)      color="$C_GREEN"; ((done++)) ;;
-      working)   color="$C_CYAN"; ((working++)) ;;
-      blocked)   color="$C_RED"; ((blocked++)) ;;
+      done)      color="$C_GREEN"; ((++done)) ;;
+      working)   color="$C_CYAN"; ((++working)) ;;
+      blocked)   color="$C_RED"; ((++blocked)) ;;
       waiting)   color="$C_YELLOW" ;;
     esac
 

@@ -12,6 +12,7 @@ cmd_brain_dispatch() {
     unblock)       _brain_sub_unblock ;;
     review)        _brain_sub_review ;;
     summarize)     _brain_sub_summarize ;;
+    monitor)       shift; _brain_sub_monitor "$@" ;;
     *)             cmd_brain ;;
   esac
 }
@@ -104,8 +105,64 @@ _brain_sub_unblock() {
   brain_id=$(_brain_pane_id "$SESSION_NAME")
   [[ -n "$brain_id" ]] || die "no brain pane"
 
-  _send_multiline_to_pane "$brain_id" "Run 'supercode peek all' to check all agents. Identify any agents that appear stuck, blocked, or making no progress. For each stuck agent, diagnose the issue and send help using 'supercode tell N \"...\"'. Update .supercode/STATUS.md."
-  ok "asked brain to unblock stuck agents"
+  local report
+  report=$(signal_health_report 180)
+
+  local msg="STUCK AGENT DETECTION — here's the current health report:"$'\n\n'
+  msg+="$report"$'\n\n'
+  msg+="For each blocked or stale agent:"$'\n'
+  msg+="1. Run 'supercode peek N' to see what they're doing"$'\n'
+  msg+="2. Diagnose the issue — are they waiting for input, hitting an error, or looping?"$'\n'
+  msg+="3. Send targeted help: supercode tell N \"here's what you need to do: ...\""$'\n'
+  msg+="4. If they need output from another agent, check shared/outputs/ and relay it"$'\n'
+  msg+="5. If truly stuck, reassign their remaining work: supercode tell N \"stop current approach, instead do: ...\""
+
+  _send_multiline_to_pane "$brain_id" "$msg"
+  ok "sent health report to brain with unblock instructions"
+}
+
+_brain_sub_monitor() {
+  require_repo
+  tmux has-session -t "$SESSION_NAME" 2>/dev/null \
+    || die "no session -- run 'supercode' first"
+
+  local brain_id
+  brain_id=$(_brain_pane_id "$SESSION_NAME")
+  [[ -n "$brain_id" ]] || die "no brain pane"
+
+  local threshold=${1:-180}
+
+  local report
+  report=$(signal_health_report "$threshold")
+
+  local blocked stale
+  blocked=$(signal_blocked_agents)
+  stale=$(signal_stale_agents "$threshold")
+
+  local msg="MONITORING CHECK:"$'\n\n'
+  msg+="$report"$'\n\n'
+
+  if [[ -n "$blocked" || -n "$stale" ]]; then
+    msg+="ISSUES DETECTED — take action now:"$'\n'
+    if [[ -n "$blocked" ]]; then
+      msg+="  BLOCKED agents: $blocked"$'\n'
+      msg+="  → Read their status message, check what they need, and send help via 'supercode tell N \"...\"'"$'\n'
+    fi
+    if [[ -n "$stale" ]]; then
+      msg+="  STALE agents (no update in >${threshold}s): $stale"$'\n'
+      msg+="  → Run 'supercode peek N' to see their screen. If stuck, send guidance. If idle, nudge them."$'\n'
+    fi
+  else
+    msg+="All agents look healthy. Run 'supercode peek all' for a quick visual check anyway."
+  fi
+
+  _send_multiline_to_pane "$brain_id" "$msg"
+
+  if [[ -n "$blocked" || -n "$stale" ]]; then
+    warn "issues found — brain notified (blocked: $(echo "$blocked" | wc -w), stale: $(echo "$stale" | wc -w))"
+  else
+    ok "all agents healthy — brain notified"
+  fi
 }
 
 _brain_sub_review() {

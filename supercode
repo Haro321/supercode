@@ -53,6 +53,7 @@ source "$SUPERCODE_LIB/session.sh"
 source "$SUPERCODE_LIB/roles.sh"
 source "$SUPERCODE_LIB/contracts.sh"
 source "$SUPERCODE_LIB/signals.sh"
+source "$SUPERCODE_LIB/migrations.sh"
 
 # Source all command modules
 for _cmd_file in "$SUPERCODE_LIB"/commands/*.sh; do
@@ -90,12 +91,18 @@ ${C_BOLD}MONITORING${C_RESET}
 ${C_BOLD}COMMUNICATION${C_RESET}
   supercode tell <N> "message"                         deliver message to agent N (multiline-safe)
   supercode broadcast "message"                        deliver message to every agent (multiline-safe)
-  supercode brain [plan|status|reassign|unblock]       brain orchestrator pane / subcommands
+  supercode brain [plan|status|reassign|unblock|monitor] brain orchestrator pane / subcommands
   supercode approve <N|role>                           approve an agent's approach
   supercode reject <N|role> "reason"                   reject and redirect an agent
 
 ${C_BOLD}SAVING${C_RESET}
-  supercode save [--dry-run] [--into <branch>]         commit + merge all agents into your branch
+  supercode save [--dry-run] [--into <branch>] [--strategy theirs|ours]
+                                                       commit + merge all agents into your branch.
+                                                       --strategy passes -X theirs/ours to git merge so
+                                                       overlapping hunks auto-resolve. On any conflict
+                                                       you can't auto-resolve, save drops you into an
+                                                       interactive prompt: [t]heirs [o]urs [m]anual
+                                                       [s]kip-branch [a]bort-all.
   supercode unsave                                     undo the last save
   supercode rollback                                   rewind to the pre-launch snapshot
 
@@ -106,14 +113,15 @@ ${C_BOLD}LABELS${C_RESET}
   supercode label clear <N>                            remove agent N's label
 
 ${C_BOLD}CLEANUP${C_RESET}
-  supercode kill                                       kill the tmux session (worktrees kept)
-  supercode clean [-f|--force] [--dry-run]             kill session + remove worktrees
+  supercode kill [-f|--force]                           kill agent panes (brain kept; --force kills all)
+  supercode clean [-f|--force] [--dry-run]             kill agents + remove worktrees (brain kept; --force kills all)
 
 ${C_BOLD}OWNERSHIP${C_RESET}
   supercode claim <role> <glob>                        assign file ownership to a role
   supercode claims                                     show current ownership map
   supercode conflicts                                  detect file conflicts and ownership violations
   supercode signals                                    show agent status signals (working/blocked/done)
+  supercode migrations [status|fix]                    detect and linearize multi-head alembic chains
 
 ${C_BOLD}UTILITIES${C_RESET}
   supercode doctor                                     check dependencies and environment
@@ -151,7 +159,7 @@ case "${1:-}" in
   save)                      shift; cmd_save "$@" ;;
   unsave)                    cmd_unsave ;;
   rollback)                  cmd_rollback ;;
-  kill)                      cmd_kill ;;
+  kill)                      shift; cmd_kill "$@" ;;
   clean)                     shift; cmd_clean "$@" ;;
   brain)                     shift; cmd_brain_dispatch "$@" ;;
   peek)                      shift; cmd_peek "$@" ;;
@@ -170,6 +178,7 @@ case "${1:-}" in
   claims)                    cmd_claims ;;
   conflicts)                 cmd_conflicts ;;
   signals|signal)            cmd_signals ;;
+  migrations|migration)      shift; cmd_migrations "$@" ;;
   doctor)                    cmd_doctor ;;
   presets)                   list_presets ;;
   roles)                     list_roles ;;

@@ -23,14 +23,14 @@ shared_dir_link() {
 }
 
 signal_write() {
-  local role=$1 status=$2 message=${3:-""} agent_n=${4:-""}
+  local role=$1 status=$2 message=${3:-""} role_n=${4:-""} agent_n=${5:-"$role_n"}
   local status_dir
   status_dir="$(_status_dir)"
   mkdir -p "$status_dir"
   local timestamp
   timestamp=$(date -Iseconds)
   local key="$role"
-  [[ -n "$agent_n" ]] && key="${role}_${agent_n}"
+  [[ -n "$role_n" ]] && key="${role}_${role_n}"
   if command -v jq >/dev/null 2>&1; then
     jq -n \
       --arg role "$role" \
@@ -70,10 +70,10 @@ signal_all_done() {
   local count=0 done_count=0
   for f in "$status_dir"/*.json; do
     [[ -f "$f" ]] || continue
-    ((count++))
+    ((++count))
     local s
     s=$(signal_read_status "$(basename "$f" .json)")
-    [[ "$s" == "done" ]] && ((done_count++))
+    [[ "$s" == "done" ]] && ((++done_count))
   done
   (( count > 0 && count == done_count ))
 }
@@ -152,7 +152,7 @@ signal_silent_agents() {
   local found=0
   if [[ -d "$status_dir" ]]; then
     for f in "$status_dir"/*.json; do
-      [[ -f "$f" ]] && ((found++))
+      [[ -f "$f" ]] && ((++found))
     done
   fi
   echo $(( expected_count - found ))

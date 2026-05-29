@@ -43,8 +43,9 @@ _build_posthoc_prompt() {
   prompt+="  supercode reject <N|role> \"r\" — reject and redirect an agent"$'\n\n'
 
   prompt+="STATUS SIGNALS:"$'\n'
-  prompt+="Each agent writes its status to shared/status/ROLE_N.json (e.g. backend_1.json, frontend_2.json)."$'\n'
-  prompt+="Multiple agents with the same role get separate files. Use 'supercode signals' to see all at once."$'\n\n'
+  prompt+="Each agent writes its status to shared/status/ROLE_N.json where N is a per-role counter (1 for the first agent of that role, 2 for the second, etc.)."$'\n'
+  prompt+="With unique roles, every file ends in _1 (e.g. backend_1.json, frontend_1.json, qa_1.json)."$'\n'
+  prompt+="With duplicate roles, they increment: backend_1.json, backend_2.json. Use 'supercode signals' to see all at once."$'\n\n'
 
   prompt+="YOUR JOB — start monitoring immediately:"$'\n\n'
 
@@ -180,8 +181,8 @@ _build_interactive_brain_prompt() {
   prompt+="   4. If they're in an error loop: give them the fix:"$'\n'
   prompt+="      supercode tell N \"You're hitting [error] because [cause]. Fix it by [solution].\""$'\n'
   prompt+="   5. If they're done but forgot to signal: remind them:"$'\n'
-  prompt+="      supercode tell N \"Your work looks complete. Update your status: echo '{...status:done...}' > shared/status/ROLE_N.json\""$'\n'
-  prompt+="      Status files are named ROLE_N.json (e.g. backend_1.json, backend_2.json) — each agent has its own file."$'\n\n'
+  prompt+="      supercode tell N \"Your work looks complete. Please update your status file to done.\""$'\n'
+  prompt+="      Each agent already knows their own status filename from their prompt — don't guess the filename, just ask them to update it."$'\n\n'
 
   prompt+="   DO NOT just passively wait. Check proactively. The agents cannot message you — YOU must check on THEM."$'\n'
   prompt+="   b) When ALL agents report status=done, move to REVIEW PHASE."$'\n\n'
@@ -205,7 +206,7 @@ _build_interactive_brain_prompt() {
   prompt+="- You CAN run: supercode dispatch, tell, broadcast, peek, diff, signals, verify, approve, reject, conflicts, label."$'\n'
   prompt+="- NEVER guess. If the task is unclear, ask the user before planning. A bad plan is worse than a short delay."$'\n'
   prompt+="- Prefer 3-5 agents. Use more only if the task clearly benefits from it. Pick only roles that are actually needed."$'\n'
-  prompt+="- You CAN assign the same role to multiple agents (e.g. two backend agents) — each gets its own unique status file (backend_1.json, backend_2.json)."$'\n'
+  prompt+="- You CAN assign the same role to multiple agents (e.g. two backend agents) — each gets its own unique status file (backend_1.json, backend_2.json). With unique roles, all files end in _1."$'\n'
   prompt+="- Do NOT write implementation code. Only planning documents."$'\n'
   prompt+="- Be specific about file paths, function names, and data shapes in contracts."$'\n'
   prompt+="- Inspect the codebase before planning — understand the existing structure."$'\n'

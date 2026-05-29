@@ -149,14 +149,24 @@ cmd_dispatch() {
     session_update_agent "$((i+1))" "role" "${roles[$i]}"
   done
 
-  # Set initial status signals (keyed by role_agentN for uniqueness)
+  # Compute per-role counters for status file naming (role_1, role_2, ...)
+  declare -A _role_counter=()
+  local -a role_ns=()
+  for ((i=0; i<n; i++)); do
+    local r="${roles[$i]}"
+    _role_counter[$r]=$(( ${_role_counter[$r]:-0} + 1 ))
+    role_ns+=("${_role_counter[$r]}")
+  done
+
+  # Set initial status signals (keyed by role_N where N is per-role counter)
   for ((i=0; i<n; i++)); do
     local agent_n=$((i+1))
+    local role_n="${role_ns[$i]}"
     local dep_str="${deps[$i]}"
     if [[ -n "$dep_str" ]]; then
-      signal_write "${roles[$i]}" "waiting" "waiting on: $dep_str" "$agent_n"
+      signal_write "${roles[$i]}" "waiting" "waiting on: $dep_str" "$role_n" "$agent_n"
     else
-      signal_write "${roles[$i]}" "working" "" "$agent_n"
+      signal_write "${roles[$i]}" "working" "" "$role_n" "$agent_n"
     fi
   done
 
@@ -207,8 +217,9 @@ cmd_dispatch() {
     local ownership
     ownership=$(ownership_get "$role" 2>/dev/null || echo "")
     local agent_deps="${deps[$i]}"
+    local role_n="${role_ns[$i]}"
     local role_prompt
-    role_prompt=$(_build_role_prompt "$role" "$task" "$all_roles_str" "$ownership" "$agent_deps" "$agent_n")
+    role_prompt=$(_build_role_prompt "$role" "$task" "$all_roles_str" "$ownership" "$agent_deps" "$role_n" "$agent_n")
     (
       sleep "$BOOT_DELAY"
       _send_multiline_to_pane "$pid" "$role_prompt"

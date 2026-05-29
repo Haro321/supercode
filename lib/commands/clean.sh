@@ -55,8 +55,18 @@ cmd_clean() {
   fi
 
   if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
-    tmux kill-session -t "$SESSION_NAME"
-    ok "killed session '$SESSION_NAME'"
+    local brain_id
+    brain_id=$(_brain_pane_id "$SESSION_NAME")
+    if [[ -n "$brain_id" && $force -eq 0 ]]; then
+      while read -r pid; do
+        [[ "$pid" == "$brain_id" ]] && continue
+        tmux kill-pane -t "$pid" 2>/dev/null || true
+      done < <(tmux list-panes -t "$SESSION_NAME:0" -F '#{pane_id}' 2>/dev/null)
+      ok "killed agent panes (brain kept alive)"
+    else
+      tmux kill-session -t "$SESSION_NAME"
+      ok "killed session '$SESSION_NAME'"
+    fi
   fi
   if [[ -d "$WORKTREE_BASE" ]]; then
     while IFS= read -r wt; do

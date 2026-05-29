@@ -6,11 +6,21 @@ cmd_save() {
 
   local dry_run=0
   local into_branch=""
+  local strategy=""
 
   while (( $# )); do
     case "$1" in
       --dry-run) dry_run=1; shift ;;
       --into)    shift; into_branch="${1:-}"; shift ;;
+      --strategy)
+        shift
+        strategy="${1:-}"
+        case "$strategy" in
+          theirs|ours) ;;
+          *) die "--strategy must be 'theirs' or 'ours' (got: '$strategy')" ;;
+        esac
+        shift
+        ;;
       *)         shift ;;
     esac
   done
@@ -143,18 +153,198 @@ cmd_save() {
   local savefile="$WORKTREE_BASE/.last-save"
   mkdir -p "$WORKTREE_BASE"
 
+  # Build merge args -- include -X theirs/ours if strategy is set
+  local merge_args=(--no-ff)
+  [[ -n "$strategy" ]] && merge_args+=(-X "$strategy")
+
+  local skipped=()
   # Merge each agent branch
   for branch in "${to_merge[@]}"; do
-    if ! git -C "$REPO_ROOT" merge --no-ff "$branch" -m "supercode: merge $branch" >/dev/null 2>&1; then
-      warn "merge conflict on $branch -- rolling back to pre-save state"
-      git -C "$REPO_ROOT" merge --abort 2>/dev/null || true
-      git -C "$REPO_ROOT" reset --hard "$cur_sha" >/dev/null
-      die "save aborted. Resolve conflicts inside the worktree and try again."
+    if git -C "$REPO_ROOT" merge "${merge_args[@]}" "$branch" -m "supercode: merge $branch" >/dev/null 2>&1; then
+      ok "merged $branch"
+      continue
     fi
-    ok "merged $branch"
+
+    # Conflict -- drop into the interactive resolver
+    warn "merge conflict on $branch"
+    local rc=0
+    _resolve_merge_conflict "$branch" || rc=$?
+    case "$rc" in
+      0)
+        ok "merged $branch (with manual conflict resolution)"
+        ;;
+      1)
+        skipped+=("$branch")
+        warn "skipped $branch -- continuing with remaining agents"
+        ;;
+      2)
+        warn "aborting entire save -- rolling back to pre-save state"
+        git -C "$REPO_ROOT" merge --abort 2>/dev/null || true
+        git -C "$REPO_ROOT" reset --hard "$cur_sha" >/dev/null
+        die "save aborted by user. Successful merges have been rolled back."
+        ;;
+    esac
   done
 
   printf "%s\n%s\n" "$cur_sha" "$current" > "$savefile"
   echo ""
   ok "Saved into $current. Run ${C_BOLD}supercode unsave${C_RESET} to undo."
+
+  if (( ${#skipped[@]} > 0 )); then
+    echo ""
+    warn "skipped branches (not merged): ${skipped[*]}"
+    echo "  Resolve manually in the worktree, then rerun ${C_BOLD}supercode save${C_RESET}."
+  fi
+
+  # Multi-head check: parallel agents often write migrations against the
+  # same down_revision and we just merged them all together.
+  if ! migrations_audit "$REPO_ROOT" >/tmp/.supercode_audit.$$ 2>&1; then
+    echo ""
+    warn "alembic chain has multi-head or fork issues:"
+    cat /tmp/.supercode_audit.$$
+    echo ""
+    echo "  Run ${C_BOLD}supercode migrations fix${C_RESET} to auto-linearize."
+  fi
+  rm -f /tmp/.supercode_audit.$$
+}
+
+# Drop into an interactive prompt when a merge conflicts mid-save.
+# Returns: 0 = resolved & committed, 1 = skip this branch, 2 = abort entire save.
+_resolve_merge_conflict() {
+  local branch=$1
+  local conflicted
+  conflicted=$(git -C "$REPO_ROOT" diff --name-only --diff-filter=U 2>/dev/null)
+
+  echo ""
+  echo "${C_BOLD}Conflicted files (merging ${C_YELLOW}$branch${C_RESET}${C_BOLD} into HEAD):${C_RESET}"
+  if [[ -n "$conflicted" ]]; then
+    echo "$conflicted" | sed 's/^/  /'
+  else
+    echo "  ${C_DIM}(none detected -- merge may have failed for another reason)${C_RESET}"
+  fi
+  echo ""
+
+  while true; do
+    local action=""
+    if ! read -r -p "[t]heirs [o]urs [m]anual [s]kip-branch [a]bort-all [?]help: " action; then
+      # stdin EOF (non-interactive context with no more input) -- abort cleanly
+      echo ""
+      warn "stdin closed; treating as abort-all"
+      git -C "$REPO_ROOT" merge --abort 2>/dev/null || true
+      return 2
+    fi
+    case "$action" in
+      t|T|theirs)
+        if _apply_side_resolution theirs "$branch"; then
+          return 0
+        fi
+        ;;
+      o|O|ours)
+        if _apply_side_resolution ours "$branch"; then
+          return 0
+        fi
+        ;;
+      m|M|manual)
+        echo ""
+        echo "Dropping to a shell in ${C_BOLD}$REPO_ROOT${C_RESET}."
+        echo "  - Resolve conflicts however you like (edit files, git add, etc)."
+        echo "  - When done, ${C_BOLD}exit 0${C_RESET} to commit & continue (or just 'exit')."
+        echo "  - ${C_BOLD}exit 1${C_RESET} to skip this branch (we'll 'git merge --abort')."
+        echo "  - ${C_BOLD}exit 2${C_RESET} to abort the entire save."
+        echo ""
+        local shell_rc=0
+        ( cd "$REPO_ROOT" && "${SHELL:-/bin/bash}" ) || shell_rc=$?
+        case "$shell_rc" in
+          0)
+            # Try to commit the merge if it's still in progress
+            if [[ -f "$REPO_ROOT/.git/MERGE_HEAD" ]]; then
+              if [[ -n "$(git -C "$REPO_ROOT" diff --name-only --diff-filter=U 2>/dev/null)" ]]; then
+                warn "conflicts still unresolved -- choose again"
+                continue
+              fi
+              if ! git -C "$REPO_ROOT" -c core.editor=true commit --no-edit >/dev/null 2>&1; then
+                warn "commit failed -- choose again"
+                continue
+              fi
+            fi
+            return 0
+            ;;
+          1)
+            git -C "$REPO_ROOT" merge --abort 2>/dev/null || true
+            return 1
+            ;;
+          2)
+            git -C "$REPO_ROOT" merge --abort 2>/dev/null || true
+            return 2
+            ;;
+          *)
+            warn "shell exited with code $shell_rc -- treating as 'choose again'"
+            ;;
+        esac
+        ;;
+      s|S|skip)
+        git -C "$REPO_ROOT" merge --abort 2>/dev/null || true
+        return 1
+        ;;
+      a|A|abort)
+        git -C "$REPO_ROOT" merge --abort 2>/dev/null || true
+        return 2
+        ;;
+      \?|h|help)
+        cat <<HLP
+  ${C_BOLD}[t] theirs${C_RESET}        -- take incoming branch ('$branch') for every conflicted file
+  ${C_BOLD}[o] ours${C_RESET}          -- keep current HEAD's version for every conflicted file
+  ${C_BOLD}[m] manual${C_RESET}        -- drop to a shell in the repo to resolve by hand
+  ${C_BOLD}[s] skip-branch${C_RESET}   -- abort just this merge; continue with remaining agents
+  ${C_BOLD}[a] abort-all${C_RESET}     -- roll back every successful merge & exit
+HLP
+        ;;
+      *)
+        echo "Unknown choice: '$action'. Type ? for help."
+        ;;
+    esac
+  done
+}
+
+# Apply 'theirs' or 'ours' to every conflicted path, then commit the merge.
+# Falls back gracefully on delete/modify and add/add cases. Returns 0 on success.
+_apply_side_resolution() {
+  local side=$1   # theirs | ours
+  local branch=$2
+  local files f
+  files=$(git -C "$REPO_ROOT" diff --name-only --diff-filter=U 2>/dev/null)
+
+  if [[ -z "$files" ]]; then
+    warn "no conflicted files to resolve"
+    return 1
+  fi
+
+  local failed=0
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    if git -C "$REPO_ROOT" checkout --"$side" -- "$f" 2>/dev/null; then
+      git -C "$REPO_ROOT" add -- "$f" 2>/dev/null || failed=1
+    else
+      # delete/modify: checkout failed -- try rm if the side wants deletion
+      if [[ "$side" == "theirs" ]] && ! git -C "$REPO_ROOT" cat-file -e ":3:$f" 2>/dev/null; then
+        git -C "$REPO_ROOT" rm -- "$f" >/dev/null 2>&1 || failed=1
+      elif [[ "$side" == "ours" ]] && ! git -C "$REPO_ROOT" cat-file -e ":2:$f" 2>/dev/null; then
+        git -C "$REPO_ROOT" rm -- "$f" >/dev/null 2>&1 || failed=1
+      else
+        warn "could not auto-resolve '$f' -- try [m]anual"
+        failed=1
+      fi
+    fi
+  done <<< "$files"
+
+  if (( failed )); then
+    return 1
+  fi
+
+  if ! git -C "$REPO_ROOT" -c core.editor=true commit \
+        -m "supercode: merge $branch (resolved with --$side)" >/dev/null 2>&1; then
+    warn "commit failed after applying --$side -- try [m]anual"
+    return 1
+  fi
+  return 0
 }

@@ -91,12 +91,12 @@ list_roles() {
 }
 
 _build_role_prompt() {
-  local role=$1 task=$2 all_roles=$3 ownership=$4 agent_deps=${5:-""} agent_n=${6:-""}
+  local role=$1 task=$2 all_roles=$3 ownership=$4 agent_deps=${5:-""} role_n=${6:-""} agent_n=${7:-"$role_n"}
   local desc="${ROLE_DESCRIPTIONS[$role]:-Agent}"
   local prompt=""
 
   local signal_key="$role"
-  [[ -n "$agent_n" ]] && signal_key="${role}_${agent_n}"
+  [[ -n "$role_n" ]] && signal_key="${role}_${role_n}"
 
   prompt+="You are the ${role^^} agent (agent-${agent_n:-?}) in a supercode multi-agent session."$'\n\n'
   prompt+="YOUR ROLE: $desc"$'\n\n'
@@ -303,7 +303,7 @@ _build_selfmod_extended_prompt() {
   p+="- Presets are named groups of roles (e.g., webapp = architect,backend,frontend,database,qa)"$'\n'
   p+="- Session state lives in .supercode/ directory in the repo root"$'\n'
   p+="- Shared data between agents goes through ./shared/ in each worktree"$'\n'
-  p+="- Signals: agents write JSON to shared/status/<role>.json to coordinate"$'\n\n'
+  p+="- Signals: agents write JSON to shared/status/<role>_<N>.json to coordinate (N = per-role counter, 1 for unique roles)"$'\n\n'
 
   p+="== EDITING RULES =="$'\n'
   p+="1. ALWAYS read the file you're editing first — understand existing patterns before changing anything."$'\n'
@@ -339,7 +339,7 @@ _build_role_dispatch_prompt() {
   prompt+="FORBIDDEN: supercode save, supercode unsave, supercode rollback — only the USER merges or reverts work."$'\n'
   prompt+="SAFE TO USE: tell, broadcast, peek, diff, signals, verify, approve, reject, conflicts, label, dispatch, clean, kill."$'\n\n'
 
-  prompt+="STATUS SIGNALS: Each agent writes to shared/status/ROLE_N.json (e.g. backend_1.json). Use 'supercode signals' to see all."$'\n\n'
+  prompt+="STATUS SIGNALS: Each agent writes to shared/status/ROLE_N.json where N is a per-role counter (1 for unique roles, 2+ for duplicates). Use 'supercode signals' to see all."$'\n\n'
 
   prompt+="YOUR JOB:"$'\n'
   prompt+="1. Analyze the request. If anything is ambiguous, ask the user to clarify FIRST."$'\n'
