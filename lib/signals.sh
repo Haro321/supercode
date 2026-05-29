@@ -22,17 +22,31 @@ shared_dir_link() {
   ln -sfn "$shared" "$wt/shared"
 }
 
+# Escape a string for safe interpolation into a JSON string literal (used only
+# on the no-jq fallback path).
+_json_esc() {
+  local s=$1
+  s=${s//\\/\\\\}   # backslash first
+  s=${s//\"/\\\"}   # then double-quote
+  s=${s//$'\n'/ }   # collapse control chars that can't appear raw in JSON
+  s=${s//$'\r'/ }
+  s=${s//$'\t'/ }
+  printf '%s' "$s"
+}
+
 signal_write() {
   local role=$1 status=$2 message=${3:-""} role_n=${4:-""} agent_n=${5:-"$role_n"}
   local status_dir
   status_dir="$(_status_dir)"
   mkdir -p "$status_dir"
+  # Epoch seconds: portable across GNU and BSD/macOS date (no -Iseconds/-d).
   local timestamp
-  timestamp=$(date -Iseconds)
+  timestamp=$(date +%s)
   local key="$role"
   [[ -n "$role_n" ]] && key="${role}_${role_n}"
   if command -v jq >/dev/null 2>&1; then
-    jq -n \
+    # -c = compact single-line output so the no-jq grep readers can parse it too.
+    jq -nc \
       --arg role "$role" \
       --arg status "$status" \
       --arg message "$message" \
@@ -42,7 +56,8 @@ signal_write() {
       > "$status_dir/$key.json"
   else
     printf '{"role":"%s","status":"%s","message":"%s","timestamp":"%s","agent":"%s"}\n' \
-      "$role" "$status" "$message" "$timestamp" "$agent_n" > "$status_dir/$key.json"
+      "$(_json_esc "$role")" "$(_json_esc "$status")" "$(_json_esc "$message")" \
+      "$(_json_esc "$timestamp")" "$(_json_esc "$agent_n")" > "$status_dir/$key.json"
   fi
 }
 
@@ -106,11 +121,14 @@ signal_age_seconds() {
   else
     ts=$(grep -o '"timestamp":"[^"]*"' "$f" 2>/dev/null | head -1 | cut -d'"' -f4)
   fi
-  [[ -n "$ts" && "$ts" != "null" ]] || { echo "-1"; return; }
-  local then_epoch now_epoch
-  then_epoch=$(date -d "$ts" +%s 2>/dev/null) || { echo "-1"; return; }
-  now_epoch=$(date +%s)
-  echo $(( now_epoch - then_epoch ))
+  # Primary: self-reported epoch timestamp. Fallback: the status file's mtime,
+  # which is rewritten on every status update -- so staleness still works even
+  # when an agent's hand-written JSON omits/garbles the timestamp field.
+  if ! [[ "$ts" =~ ^[0-9]+$ ]]; then
+    ts=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo "")
+  fi
+  [[ "$ts" =~ ^[0-9]+$ ]] || { echo "-1"; return; }
+  echo $(( $(date +%s) - ts ))
 }
 
 signal_blocked_agents() {

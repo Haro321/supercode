@@ -11,7 +11,12 @@ require_repo() {
 
 _sorted_worktrees() {
   [[ -d "$WORKTREE_BASE" ]] || return 0
-  find "$WORKTREE_BASE" -maxdepth 1 -mindepth 1 -name 'agent-*' -type d 2>/dev/null | sort -V
+  # Numeric sort on the trailing agent index (agent-1..agent-16). Portable to
+  # BSD/macOS sort, which lacks GNU's `sort -V`. Key off the basename's number
+  # so dashes anywhere in the base path can't skew the ordering.
+  find "$WORKTREE_BASE" -maxdepth 1 -mindepth 1 -name 'agent-*' -type d 2>/dev/null \
+    | awk -F/ '{ n=$NF; sub(/^agent-/, "", n); print n "\t" $0 }' \
+    | sort -n -k1,1 | cut -f2-
 }
 
 _safe_refs() {

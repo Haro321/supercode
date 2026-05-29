@@ -12,15 +12,8 @@ cmd_verify() {
   local test_cmds
   test_cmds=$(_test_commands_for_project "$ptype")
 
-  info "Project type: ${C_BOLD}$ptype${C_RESET}"
-
-  if [[ -z "$test_cmds" ]]; then
-    warn "could not detect test commands for project type '$ptype'"
-    echo "  Run verification manually in each worktree, or specify commands:"
-    echo "  ${C_BOLD}supercode verify --cmd 'npm test'${C_RESET}"
-    return 1
-  fi
-
+  # Parse --cmd BEFORE the detection guard so a custom command works even when
+  # the project type is unknown (the exact case the guard's hint advertises).
   local custom_cmd=""
   while (( $# )); do
     case "$1" in
@@ -29,6 +22,15 @@ cmd_verify() {
     esac
   done
   [[ -n "$custom_cmd" ]] && test_cmds="$custom_cmd"
+
+  info "Project type: ${C_BOLD}$ptype${C_RESET}"
+
+  if [[ -z "$test_cmds" ]]; then
+    warn "could not detect test commands for project type '$ptype'"
+    echo "  Run verification manually in each worktree, or specify commands:"
+    echo "  ${C_BOLD}supercode verify --cmd 'npm test'${C_RESET}"
+    return 1
+  fi
 
   info "Test commands: ${C_DIM}$test_cmds${C_RESET}"
   echo ""
@@ -61,7 +63,10 @@ cmd_verify() {
 
     IFS=';' read -ra cmds <<< "$test_cmds"
     for cmd in "${cmds[@]}"; do
-      cmd=$(echo "$cmd" | xargs)
+      # trim leading/trailing whitespace only -- do NOT use xargs, which strips
+      # quotes and collapses spacing and would corrupt a custom --cmd.
+      cmd="${cmd#"${cmd%%[![:space:]]*}"}"
+      cmd="${cmd%"${cmd##*[![:space:]]}"}"
       [[ -n "$cmd" ]] || continue
       printf "  ${C_CYAN}$ %s${C_RESET} ... " "$cmd"
       if (cd "$wt" && eval "$cmd" >/dev/null 2>&1); then

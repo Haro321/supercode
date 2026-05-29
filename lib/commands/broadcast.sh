@@ -7,8 +7,9 @@ cmd_broadcast() {
     || die "no session -- run 'supercode' first"
   local msg="${*:-}"
   [[ -n "$msg" ]] || die 'usage: supercode broadcast "message"'
+  local n=0
   while read -r pidx; do
-    local n=$(( pidx + 1 ))
+    n=$(( n + 1 ))
     _send_multiline_to_pane "$SESSION_NAME:0.$pidx" "$msg"
     ok "-> agent-$n"
   done < <(_agent_pane_indices "$SESSION_NAME")

@@ -19,17 +19,28 @@ migrations_find_dirs() {
 }
 
 # Extract revision and down_revision from a migration file.
-# Echoes "rev|down_rev" (down_rev may be empty for the base).
+# Echoes "rev|down_rev". down_rev may be empty (base migration) or, for an
+# alembic *merge* migration whose down_revision is a tuple of parents
+# (e.g. `down_revision = ('a', 'b')`), a comma-joined list of those parents.
+# Handles both classic `down_revision = 'x'` and modern typed
+# `down_revision: Union[str, None] = 'x'` forms.
 _migrations_parse_file() {
   local f=$1
-  local rev down
+  local rev line val down
   rev=$(grep -E "^revision[[:space:]]*[:=]" "$f" 2>/dev/null \
     | head -1 | sed -E "s/.*[:=][[:space:]]*['\"]?([^'\"#]+).*/\1/" \
     | tr -d "[:space:]\"'")
-  down=$(grep -E "^down_revision[[:space:]]*[:=]" "$f" 2>/dev/null \
-    | head -1 | sed -E "s/.*[:=][[:space:]]*['\"]?([^'\"#]+).*/\1/" \
-    | tr -d "[:space:]\"'")
-  [[ "$down" == "None" ]] && down=""
+  line=$(grep -E "^down_revision[[:space:]]*[:=]" "$f" 2>/dev/null | head -1)
+  # The value is everything after the LAST ':' or '=' (so a typed annotation
+  # like ": Union[str, None] =" is skipped and we land on the real RHS).
+  val=$(printf '%s' "$line" | sed -E 's/.*[:=][[:space:]]*//')
+  if [[ "$val" == \(* || "$val" == \[* ]]; then
+    # merge migration: pull every quoted parent out of the tuple/list
+    down=$(printf '%s' "$val" | grep -oE "['\"][^'\"]+['\"]" | tr -d "\"'" | paste -sd, -)
+  else
+    down=$(printf '%s' "$val" | sed -E "s/^['\"]?([^'\"#]+).*/\1/" | tr -d "[:space:]\"'")
+    [[ "$down" == "None" ]] && down=""
+  fi
   echo "$rev|$down"
 }
 
@@ -38,12 +49,23 @@ _migrations_parse_file() {
 migrations_collect_chain() {
   local dir=$1
   [[ -d "$dir" ]] || return 0
-  local f rev_down
+  local f rev_down rev down
   for f in "$dir"/*.py; do
     [[ -f "$f" ]] || continue
     rev_down=$(_migrations_parse_file "$f")
-    [[ "${rev_down%%|*}" ]] || continue
-    echo "${rev_down}|$f"
+    rev="${rev_down%%|*}"
+    down="${rev_down#*|}"
+    [[ -n "$rev" ]] || continue
+    if [[ "$down" == *,* ]]; then
+      # merge migration: emit one edge per parent so head/fork math is correct
+      local p; local -a _parents
+      IFS=',' read -ra _parents <<< "$down"
+      for p in "${_parents[@]}"; do
+        echo "$rev|$p|$f"
+      done
+    else
+      echo "$rev|$down|$f"
+    fi
   done
 }
 
@@ -74,11 +96,18 @@ migrations_fork_points() {
 _migrations_walk_to_tail() {
   local dir=$1 start=$2
   local chain cur next
+  declare -A seen=()
   chain=$(migrations_collect_chain "$dir")
   cur=$start
+  seen[$cur]=1
   while :; do
     next=$(echo "$chain" | awk -F'|' -v p="$cur" '$2==p {print $1}' | head -1)
     [[ -z "$next" ]] && break
+    if [[ -n "${seen[$next]:-}" ]]; then
+      warn "migration cycle detected near '$next' -- stopping walk (chain is malformed)"
+      break
+    fi
+    seen[$next]=1
     cur=$next
   done
   echo "$cur"
@@ -98,7 +127,7 @@ _migrations_file_time() {
     h="${info##* }"
     printf '%s\t%s' "$t" "$h"
   else
-    t=$(stat -c %Y "$file" 2>/dev/null || echo 0)
+    t=$(stat -c %Y "$file" 2>/dev/null || stat -f %m "$file" 2>/dev/null || echo 0)
     printf '%s\t%s' "$t" "$(basename "$file")"
   fi
 }
@@ -106,12 +135,24 @@ _migrations_file_time() {
 # Rewrite the down_revision line in a migration file. Preserves quoting
 # style and surrounding whitespace as much as possible by doing two edits:
 # the docstring `Revises:` header (if present) and the assignment.
+#
+# Handles both classic untyped assignment:
+#     down_revision = 'abc'
+# and the modern typed form alembic now generates:
+#     down_revision: Union[str, None] = 'abc'
+#
+# Returns 0 only if the assignment was actually rewritten, non-zero otherwise
+# so callers don't count a no-op as progress (and don't report false success).
 _migrations_rewrite_down() {
   local file=$1 new_parent=$2
   local tmp
   tmp=$(mktemp) || return 1
   awk -v new="$new_parent" '
     BEGIN { did_assign=0; did_header=0 }
+    /^down_revision[[:space:]]*:/ && !did_assign {
+      eq = index($0, "=")
+      if (eq > 0) { print substr($0, 1, eq) " \x27" new "\x27"; did_assign=1; next }
+    }
     /^down_revision[[:space:]]*=/ && !did_assign {
       print "down_revision = " "\x27" new "\x27"
       did_assign=1; next
@@ -121,7 +162,15 @@ _migrations_rewrite_down() {
       did_header=1; next
     }
     { print }
-  ' "$file" > "$tmp" && mv "$tmp" "$file"
+    END { exit !did_assign }
+  ' "$file" > "$tmp"
+  local rc=$?
+  if (( rc == 0 )); then
+    mv "$tmp" "$file"
+    return 0
+  fi
+  rm -f "$tmp"
+  return 1
 }
 
 # Linearize one alembic versions/ dir. Repeats until no fork points remain
@@ -133,6 +182,17 @@ migrations_linearize_dir() {
   local dir=$1
   [[ -d "$dir" ]] || return 1
   local edits=0 pass=0
+
+  # Refuse to touch a chain that contains alembic merge migrations (a revision
+  # with more than one parent). Re-parenting those would corrupt a history that
+  # was deliberately merged, so leave them for manual review.
+  local _merge_nodes
+  _merge_nodes=$(migrations_collect_chain "$dir" | awk -F'|' '{print $1}' | sort | uniq -d)
+  if [[ -n "$_merge_nodes" ]]; then
+    local _mlist; _mlist=$(echo "$_merge_nodes" | tr '\n' ' ')
+    warn "merge migration(s) present (${_mlist% }) -- refusing to auto-linearize; resolve manually"
+    return 1
+  fi
 
   while (( pass < 20 )); do
     local forks
@@ -176,8 +236,12 @@ migrations_linearize_dir() {
           continue
         fi
         prev_tail=$(_migrations_walk_to_tail "$dir" "$prev_rev")
-        _migrations_rewrite_down "$cfile" "$prev_tail"
-        ((++edits))
+        if _migrations_rewrite_down "$cfile" "$prev_tail"; then
+          ((++edits))
+        else
+          warn "could not rewrite down_revision in $cfile -- chain left unmodified"
+          return 1
+        fi
         prev_rev=$crev
       done
     done <<< "$forks"

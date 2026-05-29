@@ -32,6 +32,14 @@ cmd_save() {
   current="$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD)"
   [[ "$current" == "HEAD" ]] && die "main repo is in detached HEAD -- check out a branch first"
 
+  # Guard against a dirty repo BEFORE any branch switch -- a `git checkout`
+  # would otherwise carry uncommitted changes onto the --into branch and strand
+  # the user on a different branch than they started on.
+  if ! git -C "$REPO_ROOT" diff --quiet 2>/dev/null \
+     || ! git -C "$REPO_ROOT" diff --cached --quiet 2>/dev/null; then
+    die "main repo ($current) has uncommitted changes -- commit or stash them first"
+  fi
+
   # If --into specified, create or switch to that branch
   if [[ -n "$into_branch" ]]; then
     if git -C "$REPO_ROOT" rev-parse --verify "$into_branch" >/dev/null 2>&1; then
@@ -41,11 +49,6 @@ cmd_save() {
     fi
     current="$into_branch"
     ok "targeting branch: $current"
-  fi
-
-  if ! git -C "$REPO_ROOT" diff --quiet 2>/dev/null \
-     || ! git -C "$REPO_ROOT" diff --cached --quiet 2>/dev/null; then
-    die "main repo ($current) has uncommitted changes -- commit or stash them first"
   fi
 
   # Protected branch warning
@@ -198,14 +201,16 @@ cmd_save() {
 
   # Multi-head check: parallel agents often write migrations against the
   # same down_revision and we just merged them all together.
-  if ! migrations_audit "$REPO_ROOT" >/tmp/.supercode_audit.$$ 2>&1; then
+  local audit_file
+  audit_file=$(mktemp "${TMPDIR:-/tmp}/supercode_audit.XXXXXX") || die "could not create temp file for migration audit"
+  if ! migrations_audit "$REPO_ROOT" >"$audit_file" 2>&1; then
     echo ""
     warn "alembic chain has multi-head or fork issues:"
-    cat /tmp/.supercode_audit.$$
+    cat "$audit_file"
     echo ""
     echo "  Run ${C_BOLD}supercode migrations fix${C_RESET} to auto-linearize."
   fi
-  rm -f /tmp/.supercode_audit.$$
+  rm -f "$audit_file"
 }
 
 # Drop into an interactive prompt when a merge conflicts mid-save.

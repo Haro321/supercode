@@ -22,8 +22,8 @@ cmd_peek() {
 
   _peek_one() {
     local n=$1
-    local pidx
-    pidx=$(_agent_pane_index "$SESSION_NAME" "$n")
+    local pidx=${2:-}
+    [[ -n "$pidx" ]] || pidx=$(_agent_pane_index "$SESSION_NAME" "$n")
     local pane="$SESSION_NAME:0.$pidx"
     local title
     title=$(tmux display-message -t "$pane" -p '#{pane_title}')
@@ -42,10 +42,11 @@ cmd_peek() {
   }
 
   if [[ "$target" == "all" ]]; then
+    local n=0
     while read -r pidx; do
-      local n=$(( pidx + 1 ))
+      n=$(( n + 1 ))
       echo
-      _peek_one "$n"
+      _peek_one "$n" "$pidx"
     done < <(_agent_pane_indices "$SESSION_NAME")
   else
     _peek_one "$target"

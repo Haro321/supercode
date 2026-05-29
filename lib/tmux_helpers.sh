@@ -57,7 +57,10 @@ _build_grid() {
   local p1
   p1=$(tmux display-message -t "$SESSION_NAME:0" -p '#{pane_id}')
 
-  tmux split-window -t "$p1" -v -c "${worktrees[$top_row - 1 + 1 - 1]:-$REPO_ROOT}"
+  # The first bottom-row pane becomes worker_pids[top_row] (agent top_row+1),
+  # so it must start in its own worktree, worktrees[top_row] -- not the last
+  # top-row worker's worktree.
+  tmux split-window -t "$p1" -v -c "${worktrees[$top_row]:-$REPO_ROOT}"
   local bot_first
   bot_first=$(tmux display-message -t "$SESSION_NAME:0" -p '#{pane_id}')
 

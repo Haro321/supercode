@@ -21,6 +21,14 @@ declare -gA ROLE_DESCRIPTIONS=(
   [compatibility]="Ensure backward compatibility during refactoring: API stability, migration paths, deprecation warnings, and feature flags where needed."
   [reverser]="Reverse engineer binaries using Ghidra (static analysis, decompilation via GhidraMCP) and x64dbg/gdb (dynamic analysis, debugging). Analyze executables, shared libraries, firmware, and protocols. Identify functions, recover data structures, trace control flow, find vulnerabilities, and document findings."
   [selfmod]="Modify and improve the supercode tool itself. You are editing the tool that launched you. Supercode lives at ~/.local/bin/supercode (main entry point) and ~/.local/share/supercode/lib/ (all library modules). Read and understand the existing code before making changes. Test your changes by running 'supercode doctor' and 'supercode --help' after edits."
+  [api]="Design API contracts across REST, GraphQL, and gRPC: resource schemas, versioning, authentication, pagination, error formats, and rate limits. Publish the contract so backend and frontend agents implement against the same shapes."
+  [mobile]="Build mobile apps (iOS, Android, React Native, Flutter): screens, navigation, offline storage, push notifications, and deep links. Handle platform differences and the app lifecycle."
+  [data]="Build data pipelines: ETL/ELT, warehouses, streaming, and schema evolution. Define data models, transformations, and quality checks that downstream consumers depend on."
+  [ml]="Build and operate ML systems: model training, inference, evaluation, deployment, and drift monitoring. Define datasets, metrics, and reproducible training/eval pipelines."
+  [prompt]="Design prompts and LLM pipelines: prompt templates, evals, structured output schemas, and cost/latency tuning. Build measurable, regression-tested prompt suites for LLM apps."
+  [performance]="Profile and optimize performance: CPU, memory, latency, bundle size, and battery. Measure first, fix the real bottleneck, and prove the win with before/after benchmarks."
+  [sre]="Own reliability: define SLIs/SLOs and error budgets, add observability (metrics, logs, traces), write runbooks, and lead incident response. Make failures detectable and recoverable."
+  [legacy]="Modernize legacy code with gradual, low-risk migrations: characterization tests, strangler-fig wrappers, and parallel-run validation. Never break existing behavior."
 )
 
 declare -gA ROLE_DEFAULT_OWNERSHIP=(
@@ -43,6 +51,14 @@ declare -gA ROLE_DEFAULT_OWNERSHIP=(
   [compatibility]=""
   [reverser]="analysis/**,notes/**,scripts/**,*.py,*.java,*.gdt,*.h,*.c"
   [selfmod]="~/.local/bin/supercode,~/.local/share/supercode/lib/**"
+  [api]="openapi/**,proto/**,**/*.proto,**/*.graphql,schema/**,api/**"
+  [mobile]="ios/**,android/**,mobile/**,lib/**"
+  [data]="pipelines/**,etl/**,dbt/**,dags/**,data/**,warehouse/**"
+  [ml]="ml/**,models/**,training/**,notebooks/**,**/*.ipynb"
+  [prompt]="prompts/**,evals/**"
+  [performance]=""
+  [sre]="observability/**,runbooks/**,slo/**,monitoring/**,alerts/**"
+  [legacy]=""
 )
 
 declare -gA PRESETS=(
@@ -58,6 +74,12 @@ declare -gA PRESETS=(
   [frontend-only]="architect,frontend,ux,qa"
   [reverse]="reverser,mapper,security,docs"
   [malware]="reverser,security,mapper,debugger"
+  [mobile-app]="architect,mobile,backend,api,qa"
+  [ml-project]="architect,ml,data,backend,qa"
+  [llm-app]="architect,prompt,backend,api,qa"
+  [modernize]="mapper,legacy,refactor,compatibility,qa"
+  [perf]="mapper,performance,qa"
+  [incident]="sre,debugger,fixer,qa"
 )
 
 resolve_preset() {
@@ -69,11 +91,19 @@ resolve_preset() {
 
 parse_roles() {
   local input=$1
+  local -a roles clean=()
+  local role
   IFS=',' read -ra roles <<< "$input"
   for role in "${roles[@]}"; do
+    # strip surrounding whitespace so "backend, frontend" works
+    role="${role#"${role%%[![:space:]]*}"}"
+    role="${role%"${role##*[![:space:]]}"}"
+    [[ -n "$role" ]] || continue
     [[ -n "${ROLE_DESCRIPTIONS[$role]:-}" ]] || die "unknown role: $role (available: ${!ROLE_DESCRIPTIONS[*]})"
+    clean+=("$role")
   done
-  echo "$input"
+  [[ ${#clean[@]} -gt 0 ]] || die "no valid roles given in: $input"
+  (IFS=','; echo "${clean[*]}")
 }
 
 list_presets() {
@@ -143,6 +173,14 @@ _build_role_prompt() {
     prompt+=$(_build_reverser_extended_prompt)
   elif [[ "$role" == "selfmod" ]]; then
     prompt+=$(_build_selfmod_extended_prompt)
+  fi
+
+  # Per-role domain skill file (optional). SUPERCODE_SKILLS is resolved and
+  # exported by the entry script; if a matching agents/<role>.md exists, append
+  # its concrete patterns/checklists to the agent's prompt.
+  if [[ -n "${SUPERCODE_SKILLS:-}" && -f "$SUPERCODE_SKILLS/$role.md" ]]; then
+    prompt+="DOMAIN SKILL (concrete patterns and checklists for your role):"$'\n'
+    prompt+="$(cat "$SUPERCODE_SKILLS/$role.md")"$'\n\n'
   fi
 
   prompt+="YOUR TASK: $task"
@@ -263,11 +301,12 @@ _build_selfmod_extended_prompt() {
   p+="    ui.sh           — color codes (C_BOLD, C_RED, etc.), die(), info(), warn(), header(), spinner"$'\n'
   p+="    git.sh          — git helpers: worktree creation/cleanup, snapshot (commit/stash), branch management"$'\n'
   p+="    tmux_helpers.sh — tmux session/pane management, layout tiling, pane labeling"$'\n'
-  p+="    agents.sh       — agent lifecycle: launch_agent(), send_task(), wait_for_boot()"$'\n'
+  p+="    agents.sh       — pane label/accent helpers: _agent_accent_color(), _short_label(), _set_pane_label(). Agent LAUNCH (pane splits + 'clear && claude ...') lives in commands/start.sh + commands/dispatch.sh; task delivery uses _send_multiline_to_pane() in tmux_helpers.sh after BOOT_DELAY."$'\n'
   p+="    brain.sh        — Brain orchestrator: plan generation, agent coordination, monitoring loop"$'\n'
   p+="    session.sh      — session state: session name, lock files, state persistence (.supercode/)"$'\n'
   p+="    roles.sh        — role definitions, presets, role-aware prompt generation (THIS FILE — you are here)"$'\n'
-  p+="    contracts.sh    — contract/spec generation and validation"$'\n'
+  p+="    contracts.sh    — contract/spec generation, project-type detection, file ownership"$'\n'
+  p+="    migrations.sh   -- alembic migration-chain audit + linearization helpers"$'\n'
   p+="    signals.sh      — agent status signal reading/writing (working/blocked/done)"$'\n'
   p+="  ~/.local/share/supercode/lib/commands/  — one file per subcommand:"$'\n'
   p+="    start.sh        — cmd_start(): main launch flow (brain or direct mode)"$'\n'
@@ -294,6 +333,7 @@ _build_selfmod_extended_prompt() {
   p+="    doctor.sh       — cmd_doctor(): dependency/environment checks"$'\n'
   p+="    interactive.sh  — prompt_tasks_interactive(): interactive task input"$'\n'
   p+="    signals_cmd.sh  — cmd_signals(): show agent status signals"$'\n'
+  p+="    migrations_cmd.sh -- cmd_migrations(): audit/linearize alembic migration chains"$'\n'
   p+="    rebalance.sh    — cmd_rebalance(): internal rebalance"$'\n\n'
 
   p+="== KEY CONCEPTS =="$'\n'

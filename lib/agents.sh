@@ -9,7 +9,7 @@ _agent_accent_color() {
 
 _short_label() {
   local s=$1
-  s="${s##[[:space:]]}"
+  while [[ "$s" == [[:space:]]* ]]; do s="${s#?}"; done
   for verb in 'Build a ' 'Build an ' 'Build ' \
               'Set up the ' 'Set up a ' 'Set up ' 'Setup ' \
               'Write the ' 'Write a ' 'Write ' \

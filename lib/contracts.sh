@@ -28,8 +28,13 @@ ownership_set() {
     else
       jq --arg r "$role" --arg p "$pattern" '.[$r] = $p' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
     fi
+  elif command -v jq >/dev/null 2>&1; then
+    # File doesn't exist yet -- create it with a single key (jq escapes safely).
+    jq -n --arg r "$role" --arg p "$pattern" '{($r): $p}' > "$f"
   else
-    echo "{\"$role\": \"$pattern\"}" > "$f"
+    # Without jq we can't safely merge or escape; refuse rather than clobber the
+    # whole ownership map (the rest of the ownership API already no-ops sans jq).
+    warn "jq not found -- 'supercode claim' requires jq to record ownership (skipped: $role -> $pattern)"
   fi
 }
 

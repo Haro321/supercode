@@ -36,7 +36,7 @@ The Brain is the first thing that launches. It's your team lead.
 When you run `supercode`, the Brain:
 
 1. **Talks to you** to understand what you want to build
-2. **Picks the right roles** -- up to 5 specialized agents from 26 available roles
+2. **Picks the right roles** -- up to 5 specialized agents from 27 available roles
 3. **Creates contracts** -- shared interfaces, naming conventions, file ownership -- so agents don't conflict
 4. **Writes the plan** -- SPEC.md, CONTRACTS.md, AGENTS.md, and plan.json
 5. **Launches the agents** -- runs `supercode dispatch` itself, agents appear as new panes
@@ -90,9 +90,11 @@ supercode --roles backend,frontend,security "add API keys feature"
 | Preset | Roles |
 |--------|-------|
 | `webapp` | architect, backend, frontend, database, qa |
-| `api` | architect, api, backend, database, security, qa |
+| `api` | architect, backend, database, security, qa |
 | `fullstack` | architect, backend, frontend, database, qa, reviewer |
 | `ui` | architect, frontend, ux, accessibility, qa |
+| `backend-only` | architect, backend, database, qa |
+| `frontend-only` | architect, frontend, ux, qa |
 | `mobile-app` | architect, mobile, backend, api, qa |
 | `ml-project` | architect, ml, data, backend, qa |
 | `llm-app` | architect, prompt, backend, api, qa |
@@ -102,9 +104,11 @@ supercode --roles backend,frontend,security "add API keys feature"
 | `perf` | mapper, performance, qa |
 | `incident` | sre, debugger, fixer, qa |
 | `security` | architect, security, backend, qa |
+| `docs` | architect, backend, docs, qa |
 | `reverse` | reverser, mapper, security, docs |
+| `malware` | reverser, security, mapper, debugger |
 
-Run `supercode presets` or `supercode roles` to see all options.
+Run `supercode presets` or `supercode roles` to see all 18 presets and all 27 roles.
 
 ### Role skills
 
@@ -151,6 +155,7 @@ mapping, fit notes, and how to add more.
 | `debugger` | Root cause investigation (no patching) |
 | `fixer` | Targeted fix + regression test |
 | `reverser` | Binary reverse engineering with Ghidra and gdb/x64dbg |
+| `selfmod` | Modify supercode itself — knows the tool's own architecture and edits its libs/commands |
 
 ## Default workflow
 
@@ -211,6 +216,7 @@ supercode brain plan         # ask brain to create planning docs
 supercode brain status       # ask brain to check all agents and update STATUS.md
 supercode brain reassign 3 "also handle error states"
 supercode brain unblock      # ask brain to help stuck agents
+supercode brain monitor      # send brain a health report (blocked/stale agents) and tell it to act
 supercode brain review       # ask brain to review all agent work
 supercode brain summarize    # get a full project summary
 ```
@@ -254,11 +260,33 @@ Supported: Node/React/Next.js, Python/Django/FastAPI, Rust, Go, PHP, Ruby, Java.
 supercode save --dry-run               # preview with conflict prediction + ownership checks
 supercode save                         # commit + merge all agents
 supercode save --into feature/result   # merge into a different branch
+supercode save --strategy theirs       # auto-resolve overlapping hunks (-X theirs|ours)
 supercode unsave                       # undo the last save
 supercode rollback                     # rewind to pre-launch state
 ```
 
-Protected branches (`main`, `master`, `production`) trigger a warning before merge.
+Protected branches (`main`, `master`, `production`, `prod`, `release`) trigger a warning before merge.
+
+`--strategy theirs|ours` passes `-X theirs/ours` to `git merge` so overlapping hunks
+auto-resolve. On any conflict it can't auto-resolve, `save` drops you into an
+interactive resolver: `[t]heirs [o]urs [m]anual [s]kip-branch [a]bort-all` — and
+`abort-all` rolls back every merge it already made.
+
+## Migrations (alembic)
+
+When parallel agents each add a database migration off the same head, merging
+their branches leaves the alembic chain forked (multiple heads), so
+`alembic upgrade head` refuses to run. `supercode save` audits for this
+automatically after a merge, and you can also run it directly:
+
+```bash
+supercode migrations status   # report multi-head / forked alembic chains
+supercode migrations fix      # re-parent forked migrations into one linear chain
+```
+
+`fix` orders the forked migrations by commit time and re-links their
+`down_revision`s. It safely refuses to touch chains that contain a deliberate
+merge migration.
 
 ## Is this safe?
 
@@ -294,7 +322,7 @@ supercode/
     agents.sh                  # agent labels and accents
     brain.sh                   # brain prompts and pane creation
     session.sh                 # session state tracking
-    roles.sh                   # 26 agent roles, 18 presets
+    roles.sh                   # 27 agent roles, 18 presets
     contracts.sh               # file ownership, project detection, contracts
     signals.sh                 # status signal helpers
     commands/

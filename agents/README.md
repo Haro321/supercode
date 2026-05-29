@@ -8,12 +8,13 @@ agent works to a higher standard than the one-liner alone allows.
 ## How loading works
 
 At dispatch time, `_build_role_prompt()` in `lib/roles.sh` checks for
-`$SUPERCODE_AGENTS/<role>.md` and appends its content to the agent's prompt
+`$SUPERCODE_SKILLS/<role>.md` and appends its content to the agent's prompt
 under a `DOMAIN SKILL` heading. Roles without a matching file fall back
 silently to the bash description.
 
-`SUPERCODE_AGENTS` is resolved by the `supercode` script in this order:
-1. `$SUPERCODE_AGENTS` (env override)
+`SUPERCODE_SKILLS` is resolved by the `supercode` script in this order
+(note: it is **not** `SUPERCODE_AGENTS`, which is the integer worker count):
+1. `$SUPERCODE_SKILLS` (env override)
 2. `<script_dir>/agents/` (dev/checkout path)
 3. `~/.local/share/supercode/agents/` (installed path)
 

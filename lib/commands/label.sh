@@ -17,8 +17,9 @@ cmd_label() {
       ok "agent-$n  ->  $text"
       ;;
     auto)
+      local n=0
       while read -r pidx; do
-        local n=$(( pidx + 1 ))
+        n=$(( n + 1 ))
         local title
         title=$(tmux display-message -t "$SESSION_NAME:0.$pidx" -p '#{pane_title}')
         title="${title## }"
@@ -39,8 +40,9 @@ cmd_label() {
       ok "cleared label for agent-$n"
       ;;
     list|"")
+      local n=0
       while read -r pidx; do
-        local n=$(( pidx + 1 ))
+        n=$(( n + 1 ))
         local lbl
         lbl=$(tmux show-option -pqv -t "$SESSION_NAME:0.$pidx" "@label" 2>/dev/null || true)
         local acc
